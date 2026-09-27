@@ -5,7 +5,8 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::sql::TableReference;
 use futures::TryStreamExt;
 use mongodb::{
-    bson::{doc, Document},
+    bson::{doc, Bson, Document},
+    options::Collation,
     Client, Collection,
 };
 use snafu::prelude::*;
@@ -18,6 +19,31 @@ use crate::mongodb::utils::unnest::{unnest_bson_documents, UnnestBehavior, Unnes
 use crate::mongodb::{Error, QuerySnafu, Result, UnableToGetSchemaSnafu, UnableToGetTablesSnafu};
 use crate::schema_projection::SchemaProjection;
 use crate::util::schema::merge_inferred_and_declared_schemas;
+
+/// How a `find` on a collection compares strings, which decides the string
+/// predicates it can evaluate as SQL does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringComparison {
+    /// By code point, as SQL does: the collection has no collation, or the
+    /// simple one.
+    CodePoint,
+    /// By the collection's default collation, which a `find` replaces with
+    /// the simple one when it has to compare strings by code point.
+    Collated,
+    /// By a collation a `find` cannot replace, such as a view's, or by one
+    /// that could not be read.
+    Fixed,
+}
+
+impl StringComparison {
+    /// The collation a `find` with `filter` has to name to compare strings as
+    /// SQL does, if any.
+    #[must_use]
+    pub fn collation_for(self, filter: &Document) -> Option<Collation> {
+        (self == Self::Collated && crate::mongodb::utils::expression::orders_strings(filter))
+            .then(|| Collation::builder().locale("simple").build())
+    }
+}
 
 pub struct MongoDBConnection {
     pub client: Arc<Client>,
@@ -46,6 +72,49 @@ impl MongoDBConnection {
 
     fn get_collection(&self, collection: &str) -> Collection<Document> {
         self.client.database(&self.db_name).collection(collection)
+    }
+
+    /// How a `find` on `collection` compares strings, from the collation the
+    /// collection or view was created with.
+    pub async fn string_comparison(&self, collection: &str) -> StringComparison {
+        let listing = self
+            .client
+            .database(&self.db_name)
+            .run_command(doc! { "listCollections": 1, "filter": { "name": collection } })
+            .await;
+        let specification = match &listing {
+            Ok(listing) => listing
+                .get_document("cursor")
+                .and_then(|cursor| cursor.get_array("firstBatch"))
+                .ok()
+                .and_then(|batch| batch.first())
+                .and_then(Bson::as_document),
+            Err(_) => None,
+        };
+        let Some(specification) = specification else {
+            tracing::debug!(
+                "Could not read the collation of MongoDB collection '{collection}', so its string inequalities and ranges are not pushed down to MongoDB"
+            );
+            return StringComparison::Fixed;
+        };
+        let collation = specification
+            .get_document("options")
+            .ok()
+            .and_then(|options| options.get("collation"));
+        let code_point = match collation {
+            None => true,
+            Some(Bson::Document(collation)) => collation
+                .get_str("locale")
+                .is_ok_and(|locale| locale == "simple"),
+            Some(_) => false,
+        };
+        match specification.get_str("type") {
+            _ if code_point => StringComparison::CodePoint,
+            // A view, or a time series collection, refuses a collation other
+            // than its own.
+            Ok("collection") => StringComparison::Collated,
+            _ => StringComparison::Fixed,
+        }
     }
 
     pub async fn tables(&self) -> Result<Vec<String>, Error> {
@@ -121,8 +190,8 @@ impl MongoDBConnection {
         table_reference: &Arc<TableReference>,
         projected_schema: &SchemaRef,
         filters_doc: &Document,
+        collation: Option<&Collation>,
         limit: Option<i32>,
-        sort_doc: &Document,
         schema_projection: Option<&SchemaProjection>,
     ) -> Result<SendableRecordBatchStream> {
         let collection_name = table_reference.table();
@@ -140,8 +209,8 @@ impl MongoDBConnection {
 
         let mut find = coll.find(filters_doc.clone()).projection(mongo_projection);
 
-        if !sort_doc.is_empty() {
-            find = find.sort(sort_doc.clone());
+        if let Some(collation) = collation {
+            find = find.collation(collation.clone());
         }
 
         if let Some(l) = limit {
@@ -201,8 +270,21 @@ pub fn schema_to_mongo_projection(projected_schema: &SchemaRef) -> Document {
 
     let has_id = projected_schema.fields().iter().any(|f| f.name() == "_id");
 
-    for field in projected_schema.fields() {
-        projection.insert(field.name(), 1);
+    let names: Vec<&str> = projected_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    for name in &names {
+        // MongoDB refuses a projection of a path beside one of its prefixes as
+        // a path collision. The prefix returns the whole embedded document,
+        // which unnesting flattens into the path's column too.
+        let covered = name
+            .match_indices('.')
+            .any(|(i, _)| names.contains(&&name[..i]));
+        if !covered {
+            projection.insert(*name, 1);
+        }
     }
 
     // MongoDB always includes _id unless explicitly suppressed
@@ -218,6 +300,21 @@ mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use mongodb::bson::doc;
+
+    #[test]
+    fn a_path_is_not_projected_beside_its_prefix() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("_id", DataType::Utf8, false),
+            Field::new("address", DataType::Utf8, true),
+            Field::new("address.city", DataType::Utf8, true),
+            Field::new("address.zip.code", DataType::Utf8, true),
+            Field::new("addressbook", DataType::Utf8, true),
+        ]));
+        assert_eq!(
+            schema_to_mongo_projection(&schema),
+            doc! { "_id": 1, "address": 1, "addressbook": 1 }
+        );
+    }
 
     #[test]
     fn test_projection_with_id() {

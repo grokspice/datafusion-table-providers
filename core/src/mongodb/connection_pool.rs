@@ -76,6 +76,16 @@ impl MongoDBConnectionPool {
         })
     }
 
+    /// How many levels of embedded documents unnesting flattens into dotted
+    /// columns, or `None` when the flattening is not depth based.
+    #[must_use]
+    pub fn unnest_depth(&self) -> Option<usize> {
+        match self.unnest_parameters.behavior {
+            UnnestBehavior::Depth(depth) => Some(depth),
+            UnnestBehavior::Custom(_) => None,
+        }
+    }
+
     pub async fn connect(&self) -> Result<Box<MongoDBConnection>> {
         Ok(Box::new(MongoDBConnection::new(
             Arc::clone(&self.client),

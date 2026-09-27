@@ -584,14 +584,14 @@ impl ArrayBuilderTrait for TimestampArrayBuilder {
                 Some(ms) => b.append_value(ms),
                 None => b.append_null(),
             },
-            TimestampArrayBuilder::Microsecond(b) => match millis {
-                Some(ms) => b.append_value(ms * 1000),
-                None => b.append_null(),
-            },
-            TimestampArrayBuilder::Nanosecond(b) => match millis {
-                Some(ms) => b.append_value(ms * 1_000_000),
-                None => b.append_null(),
-            },
+            // A `date` too distant for the unit is NULL, as Arrow's safe cast
+            // makes it, rather than a wrapped-around instant.
+            TimestampArrayBuilder::Microsecond(b) => {
+                b.append_option(millis.and_then(|ms| ms.checked_mul(1_000)));
+            }
+            TimestampArrayBuilder::Nanosecond(b) => {
+                b.append_option(millis.and_then(|ms| ms.checked_mul(1_000_000)));
+            }
         }
         Ok(())
     }
@@ -1780,6 +1780,38 @@ mod tests {
             .downcast_ref::<TimestampNanosecondArray>()
             .unwrap();
         assert_eq!(arr.value(0), 1_700_000_000_000_000_000);
+    }
+
+    #[test]
+    fn a_date_beyond_the_unit_is_null_rather_than_wrapped() {
+        // The last millisecond a nanosecond `i64` holds, and the next one.
+        let last = i64::MAX / 1_000_000;
+        let docs = vec![
+            doc! { "ns": DateTime::from_millis(last), "us": DateTime::from_millis(i64::MAX / 1_000) },
+            doc! { "ns": DateTime::from_millis(last + 1), "us": DateTime::from_millis(i64::MAX / 1_000 + 1) },
+            doc! { "ns": DateTime::from_millis(-last - 1), "us": DateTime::from_millis(i64::MIN) },
+        ];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ns", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            Field::new("us", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        ]));
+        let result = mongo_docs_to_arrow(&docs, schema).expect("converted");
+        let ns = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .expect("nanoseconds");
+        let us = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .expect("microseconds");
+        assert_eq!(ns.value(0), last * 1_000_000);
+        assert_eq!(us.value(0), (i64::MAX / 1_000) * 1_000);
+        for row in 1..3 {
+            assert!(ns.is_null(row), "row {row}: {}", ns.value(row));
+            assert!(us.is_null(row), "row {row}: {}", us.value(row));
+        }
     }
 
     #[test]
