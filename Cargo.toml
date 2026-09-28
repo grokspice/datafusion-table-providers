@@ -61,11 +61,7 @@ datafusion-table-providers-postgres = { version = "0.13.1", path = "crates/postg
 datafusion-table-providers-duckdb = { version = "0.13.1", path = "crates/duckdb" }
 datafusion-table-providers-adbc = { version = "0.13.1", path = "crates/adbc" }
 datafusion-table-providers-oracle = { version = "0.13.1", path = "crates/oracle" }
-# TODO(DF55): repoint at the arrow-59-compatible spiceai-1.4.4-arrow59 branch
-# once it is pushed (prepared locally as commit 8759747e3070275c00c3b02bb2b13da03cb4d6b0).
-# Pinned at the last-pushed rev for now; the local path patch above supplies
-# the actual arrow-59 build content in this checkout.
-duckdb = { git = "https://github.com/spiceai/duckdb-rs.git", rev = "875974763e847eb4dc4e071f875f5bbecdd63b47" } # branch: viktor/df-55-upgrade (duckdb 1.4.4 on arrow 59)
+duckdb = { git = "https://github.com/spiceai/duckdb-rs.git", rev = "875974763e847eb4dc4e071f875f5bbecdd63b47" } # branch: spiceai-1.4.4-patches (duckdb 1.4.4 on arrow 59)
 adbc_core = { version = "0.24" }
 adbc_driver_manager = { version = "0.24" }
 parquet = "59.2"
@@ -111,7 +107,7 @@ sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "f173c0726
   "with-bigdecimal",
   "with-time",
   "with-chrono",
-] }
+] } # branch: spiceai-1.0.2-patches
 
 [patch.crates-io]
 rusqlite = { git = "https://github.com/spiceai/rusqlite.git", rev = "3f98225d35735a61a5875d356774d246a8b0c037" } # spiceai-v0.40.0
@@ -120,10 +116,10 @@ tokio-rusqlite = { git = "https://github.com/spiceai/tokio-rusqlite.git", rev = 
 # Spice's datafusion-federation fork carries
 # `SQLExecutor::pre_federation_optimizer_rules`, which the adbc provider
 # overrides and crates.io 0.5.7 lacks.
-datafusion-federation = { git = "https://github.com/spiceai/datafusion-federation.git", rev = "40fefe6426addce7864b80261bdf771ddb19d8ab" } # branch: viktor/df-55-upgrade
+datafusion-federation = { git = "https://github.com/spiceai/datafusion-federation.git", rev = "40fefe6426addce7864b80261bdf771ddb19d8ab" } # branch: spiceai-55-patches
 
 # arrow-rs with spice patches (ObjectVersionType + new_with_meta for Azure compatibility).
-arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" } # branch: viktor/df-55-upgrade
+arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" } # branch: spiceai-59-patches
 arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
 arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
 arrow-buffer = { git = "https://github.com/spiceai/arrow-rs.git", rev = "eed0d7b890d56e292afd401c8f1f3f8d62b2da0a" }
