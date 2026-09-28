@@ -99,7 +99,7 @@ fundu = "2.0.1"
 geo-types = "0.7.13"
 sha2 = "0.10"
 hickory-resolver = "0.26"
-sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "71e03b978dae71aa0a41d33b4bac93b1234cc615", features = [
+sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "985eec78d1a4417b5933e57aac1f39e4470f9473", features = [
   "backend-sqlite",
   "backend-postgres",
   "postgres-array",
@@ -107,7 +107,7 @@ sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "71e03b978
   "with-bigdecimal",
   "with-time",
   "with-chrono",
-] } # branch: spiceai-1.0.2-patches
+] } # branch: spiceai-1.0.1-patches
 
 [patch.crates-io]
 rusqlite = { git = "https://github.com/spiceai/rusqlite.git", rev = "3f98225d35735a61a5875d356774d246a8b0c037" } # spiceai-v0.40.0
