@@ -6153,7 +6153,7 @@ checksum = "c1257cd4248b4132760d6524d6dda4e053bc648c9070b960929bf50cfb1e7add"
 [[package]]
 name = "sea-query"
 version = "1.0.2"
-source = "git+https://github.com/spiceai/sea-query.git?rev=f173c07266c704e4338957a744a1c6f42d1b814a#f173c07266c704e4338957a744a1c6f42d1b814a"
+source = "git+https://github.com/spiceai/sea-query.git?rev=71e03b978dae71aa0a41d33b4bac93b1234cc615#71e03b978dae71aa0a41d33b4bac93b1234cc615"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -6166,7 +6166,7 @@ dependencies = [
 [[package]]
 name = "sea-query-derive"
 version = "1.0.0"
-source = "git+https://github.com/spiceai/sea-query.git?rev=f173c07266c704e4338957a744a1c6f42d1b814a#f173c07266c704e4338957a744a1c6f42d1b814a"
+source = "git+https://github.com/spiceai/sea-query.git?rev=71e03b978dae71aa0a41d33b4bac93b1234cc615#71e03b978dae71aa0a41d33b4bac93b1234cc615"
 dependencies = [
  "darling 0.20.11",
  "heck 0.4.1",
