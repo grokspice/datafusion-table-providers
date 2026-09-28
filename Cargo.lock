@@ -226,8 +226,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "arrow"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c14b3d39f306bc28fd639d59f06e17a0f377d0021e1b7e9054e4d6fedc98774"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -247,8 +246,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce2961626677665b2195eb59242af4c7befe7b8737ca2050295389362380104e"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -261,8 +259,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e5f6adeffdf587d7a31db5d2266189624b526730cd3627f9ff9fedae97ad584"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -281,8 +278,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "097d193003ce7995d5d087089069ec2a6e0187faf5a6f8c9f38af2645d987182"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "bytes",
  "half",
@@ -293,8 +289,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "635c9c635668ad26adf76cce8fb276c4be7cf06e63bd516de7da514f9680ee53"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -315,8 +310,7 @@ dependencies = [
 [[package]]
 name = "arrow-csv"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c2ebf8d631e79b02c16cf5ae860561272c26024ec88fce389a56aaddd558e86"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -330,8 +324,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ba2f832eaeca24b8f26143dba750e42ee4ab51cf7d65e701ca9607cfda9f358"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -343,8 +336,7 @@ dependencies = [
 [[package]]
 name = "arrow-flight"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0e6d452fff35cb4a3ef1a719d03fdfe653e590e8012b57d3057a316e295402"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -370,8 +362,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcc41681ea80f521df14c36725b74d4c60702c47f0793af2be469c04527e2599"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -386,8 +377,7 @@ dependencies = [
 [[package]]
 name = "arrow-json"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2f57d7a81969f24ccf80809587b76c09897e6f829d2d65a5976bfb3218851f1"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -427,8 +417,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c900759f3bd8354fd4196bc4403eee846894dc2adf66b4225472006a0bf18c5"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -440,8 +429,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4c6425032e28266e3fc4ff680805e57e670d6ea92473043f3e65b7ed6ac79f2"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -453,8 +441,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10fab8d4563491417ba801fab29d205104d20d4bdf37bda6cd1cf425cff598cd"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
@@ -465,8 +452,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc58569193c2525915f3cc6310edba3792f1200f65d6e9ed330aa33e691493b8"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -479,8 +465,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e0813f3c35c1cfea65e14c20a953440f7783c088b7ad2d0db162ccdeefcec14"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5091,8 +5076,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "59.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff322f54b1a0f9288e614ed1f2d329b380af5476420db19f46ffb865e1163d73"
+source = "git+https://github.com/spiceai/arrow-rs.git?rev=16974504b7f1776971f4fb20bbe355b09d090a0d#16974504b7f1776971f4fb20bbe355b09d090a0d"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -8092,83 +8076,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "arrow"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-arith"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-array"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-buffer"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-cast"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-csv"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-data"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-flight"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-ipc"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-json"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-ord"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-row"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-schema"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-select"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "arrow-string"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
-
-[[patch.unused]]
-name = "parquet"
-version = "59.2.0"
-source = "git+https://github.com/spiceai/arrow-rs.git?rev=eed0d7b890d56e292afd401c8f1f3f8d62b2da0a#eed0d7b890d56e292afd401c8f1f3f8d62b2da0a"
