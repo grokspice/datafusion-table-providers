@@ -2,11 +2,11 @@ use crate::connection::StringComparison;
 use crate::connection_pool::MongoDBConnectionPool;
 use crate::utils::expression::{translate_filter, FilterScope};
 use crate::Error;
-use datafusion_table_providers_common::schema_projection::SchemaProjection;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::project_schema;
+use datafusion::common::TableReference;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
@@ -17,7 +17,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use datafusion::common::TableReference;
+use datafusion_table_providers_common::schema_projection::SchemaProjection;
 use futures::TryStreamExt;
 use mongodb::bson::{doc, Document};
 use mongodb::options::Collation;

@@ -37,7 +37,6 @@ async fn arrow_duckdb_round_trip(
         constraints: Constraints::default(),
         column_defaults: HashMap::new(),
         temporary: false,
-        or_replace: false,
     };
     let table_provider = factory
         .create(&ctx.state(), &cmd)

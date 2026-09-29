@@ -18,8 +18,8 @@ fn schema_with_ts(data_type: DataType) -> Schema {
 /// evaluates against rows one microsecond apart and assert on which row survives it.
 mod duckdb_timestamp_execution_tests {
     use super::*;
-    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::*;
     use datafusion::prelude::*;
+    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::*;
     use duckdb::Connection;
 
     /// `2^53` microseconds since the epoch — the last microsecond an `f64` holds alongside both
@@ -150,8 +150,8 @@ mod duckdb_timestamp_execution_tests {
 /// apart and assert on which row survives it.
 mod duckdb_date_execution_tests {
     use super::*;
-    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::*;
     use datafusion::prelude::*;
+    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::*;
     use duckdb::Connection;
 
     /// `2038-01-19` is the last day whose epoch second an `i32` holds (`i32::MAX / 86_400` =
@@ -242,9 +242,9 @@ mod duckdb_date_execution_tests {
 /// cannot distinguish "escaped" from "escaped in a form this engine accepts".
 mod duckdb_execution_tests {
     use super::*;
-    use datafusion_table_providers_common::util::dml::*;
-    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::Engine;
     use datafusion::prelude::*;
+    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::Engine;
+    use datafusion_table_providers_common::util::dml::*;
     use duckdb::Connection;
 
     const ROWS: [&str; 4] = ["O'Brien", "plain", "x' OR 1=1 --", r"\' OR 1=1 --"];
@@ -580,10 +580,10 @@ mod duckdb_execution_tests {
 /// instant".
 mod duckdb_timestamp_precision_tests {
     use super::*;
-    use datafusion_table_providers_common::util::dml::*;
-    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::Engine;
     use datafusion::prelude::*;
     use datafusion::scalar::ScalarValue;
+    use datafusion_table_providers_common::sql::sql_provider_datafusion::expr::Engine;
+    use datafusion_table_providers_common::util::dml::*;
     use duckdb::Connection;
 
     /// `2026-01-01 00:00:00` UTC, in microseconds.

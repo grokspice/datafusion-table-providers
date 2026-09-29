@@ -494,7 +494,7 @@ async fn test_mongodb_nested_object_types(port: usize) {
         .await
         .expect("MongoDB connection pool should be created");
 
-    let table = MongoDBTable::new(
+    let table = MongoDBTable::new_with_projection(
         &Arc::new(mongo_conn_pool),
         "nested_object_collection",
         None,
@@ -654,9 +654,10 @@ async fn arrow_mongodb_one_way(
         .await
         .expect("MongoDB connection pool should be created");
 
-    let table = MongoDBTable::new(&Arc::new(mongo_conn_pool), collection_name, None, None)
-        .await
-        .expect("Table should be created");
+    let table =
+        MongoDBTable::new_with_projection(&Arc::new(mongo_conn_pool), collection_name, None, None)
+            .await
+            .expect("Table should be created");
 
     ctx.register_table(collection_name, Arc::new(table))
         .expect("Table should be registered");

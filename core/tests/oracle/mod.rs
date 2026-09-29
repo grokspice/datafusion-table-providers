@@ -451,7 +451,7 @@ async fn arrow_oracle_one_way(
             + Sync
             + 'static,
     > = pool;
-    let table = SqlTable::new("oracle", &sqltable_pool, table_name)
+    let table = SqlTable::new("oracle", &sqltable_pool, table_name, None)
         .await
         .expect("Table should be created");
 

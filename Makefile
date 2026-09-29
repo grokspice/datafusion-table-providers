@@ -23,4 +23,4 @@ check-integration:
 # The DuckDB integration suite; in release to validate DuckDB behavior using producation configuration
 .PHONY: test-integration-duckdb
 test-integration-duckdb:
-	RUST_LOG=info cargo test --release -p datafusion-table-providers --test integration --no-default-features --features duckdb,duckdb-federation -- --nocapture --test-threads 1
+	RUST_LOG=info cargo test --release -p datafusion-table-providers --test integration --no-default-features --features duckdb -- --nocapture --test-threads 1

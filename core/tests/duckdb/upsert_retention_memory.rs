@@ -40,7 +40,7 @@ use datafusion::physical_plan::collect;
 use datafusion_table_providers::duckdb::write::DuckDBTableWriter;
 use datafusion_table_providers::duckdb::{DuckDB, DuckDBTableProviderFactory};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rstest::rstest;
 
 /// Refresh cycles to run.
