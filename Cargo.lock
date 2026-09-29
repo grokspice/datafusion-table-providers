@@ -1888,7 +1888,7 @@ dependencies = [
 [[package]]
 name = "datafusion-federation"
 version = "0.5.7"
-source = "git+https://github.com/spiceai/datafusion-federation.git?rev=40fefe6426addce7864b80261bdf771ddb19d8ab#40fefe6426addce7864b80261bdf771ddb19d8ab"
+source = "git+https://github.com/spiceai/datafusion-federation.git?rev=7e52a9740fc3447fe9ea8e4edd51dea696b45758#7e52a9740fc3447fe9ea8e4edd51dea696b45758"
 dependencies = [
  "arrow-json",
  "async-stream",
@@ -6137,7 +6137,7 @@ checksum = "c1257cd4248b4132760d6524d6dda4e053bc648c9070b960929bf50cfb1e7add"
 [[package]]
 name = "sea-query"
 version = "1.0.1"
-source = "git+https://github.com/spiceai/sea-query.git?rev=985eec78d1a4417b5933e57aac1f39e4470f9473#985eec78d1a4417b5933e57aac1f39e4470f9473"
+source = "git+https://github.com/spiceai/sea-query.git?rev=f6725070c491f3358688805f517a7c1688f32b95#f6725070c491f3358688805f517a7c1688f32b95"
 dependencies = [
  "bigdecimal",
  "chrono",
@@ -6150,7 +6150,7 @@ dependencies = [
 [[package]]
 name = "sea-query-derive"
 version = "1.0.1"
-source = "git+https://github.com/spiceai/sea-query.git?rev=985eec78d1a4417b5933e57aac1f39e4470f9473#985eec78d1a4417b5933e57aac1f39e4470f9473"
+source = "git+https://github.com/spiceai/sea-query.git?rev=f6725070c491f3358688805f517a7c1688f32b95#f6725070c491f3358688805f517a7c1688f32b95"
 dependencies = [
  "darling 0.20.11",
  "heck 0.4.1",

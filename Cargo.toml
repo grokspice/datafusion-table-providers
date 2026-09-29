@@ -99,7 +99,7 @@ fundu = "2.0.1"
 geo-types = "0.7.13"
 sha2 = "0.10"
 hickory-resolver = "0.26"
-sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "985eec78d1a4417b5933e57aac1f39e4470f9473", features = [
+sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "f6725070c491f3358688805f517a7c1688f32b95", features = [
   "backend-sqlite",
   "backend-postgres",
   "postgres-array",
@@ -116,7 +116,7 @@ tokio-rusqlite = { git = "https://github.com/spiceai/tokio-rusqlite.git", rev = 
 # Spice's datafusion-federation fork carries
 # `SQLExecutor::pre_federation_optimizer_rules`, which the adbc provider
 # overrides and crates.io 0.5.7 lacks.
-datafusion-federation = { git = "https://github.com/spiceai/datafusion-federation.git", rev = "40fefe6426addce7864b80261bdf771ddb19d8ab" } # branch: spiceai-55-patches
+datafusion-federation = { git = "https://github.com/spiceai/datafusion-federation.git", rev = "7e52a9740fc3447fe9ea8e4edd51dea696b45758" } # branch: spiceai-55-patches
 
 # arrow-rs with spice patches (ObjectVersionType + new_with_meta for Azure compatibility).
 arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "16974504b7f1776971f4fb20bbe355b09d090a0d" } # branch: spiceai-59-patches
