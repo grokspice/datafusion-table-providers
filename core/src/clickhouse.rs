@@ -19,7 +19,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
 use datafusion::sql::sqlparser::ast::{Expr, Value};
 use datafusion::sql::unparser;
-use datafusion::{common::Constraints, sql::TableReference};
+use datafusion::{common::Constraints, common::TableReference};
 use std::sync::Arc;
 
 use crate::sql::db_connection_pool::clickhousepool::ClickHouseConnectionPool;

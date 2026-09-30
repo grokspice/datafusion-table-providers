@@ -424,7 +424,7 @@ async fn create_table(
                 .expect("dataset schema converts to a DFSchema"),
         ),
         name: name.into(),
-        location: String::new(),
+        locations: vec![],
         file_type: String::new(),
         table_partition_cols: vec![],
         if_not_exists: false,

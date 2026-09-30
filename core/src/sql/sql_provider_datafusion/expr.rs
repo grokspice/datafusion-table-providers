@@ -3,12 +3,12 @@ use std::{borrow::Cow, sync::Arc};
 use arrow::datatypes::{DataType, Schema, TimeUnit};
 use bigdecimal::{num_bigint::BigInt, BigDecimal};
 use datafusion::{
+    common::TableReference,
     logical_expr::{Cast, Expr, Operator},
     scalar::ScalarValue,
     sql::unparser::dialect::{
         DefaultDialect, Dialect, DuckDBDialect, MySqlDialect, PostgreSqlDialect, SqliteDialect,
     },
-    sql::TableReference,
 };
 
 pub const SECONDS_IN_DAY: i32 = 86_400;
@@ -1373,7 +1373,7 @@ mod tests {
     fn mixed_qualification_of_one_relation_is_refused() {
         let bare = Expr::Column(datafusion::common::Column::new(Some("t"), "a"));
         let partial = Expr::Column(datafusion::common::Column::new(
-            Some(datafusion::sql::TableReference::partial("public", "t")),
+            Some(datafusion::common::TableReference::partial("public", "t")),
             "b",
         ));
 
@@ -1390,12 +1390,12 @@ mod tests {
     #[test]
     fn two_catalogs_bridged_by_a_bare_reference_are_refused() {
         let left = Expr::Column(datafusion::common::Column::new(
-            Some(datafusion::sql::TableReference::full("a", "public", "t")),
+            Some(datafusion::common::TableReference::full("a", "public", "t")),
             "id",
         ));
         let bridge = Expr::Column(datafusion::common::Column::new(Some("t"), "id"));
         let right = Expr::Column(datafusion::common::Column::new(
-            Some(datafusion::sql::TableReference::full("b", "public", "t")),
+            Some(datafusion::common::TableReference::full("b", "public", "t")),
             "id",
         ));
 

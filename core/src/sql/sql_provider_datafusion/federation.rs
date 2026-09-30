@@ -15,13 +15,11 @@ use crate::sql::sql_provider_datafusion::{
 use crate::util::supported_functions::contains_unsupported_functions;
 use datafusion::{
     arrow::datatypes::SchemaRef,
+    common::TableReference,
     error::{DataFusionError, Result as DataFusionResult},
     logical_expr::LogicalPlan,
     physical_plan::{stream::RecordBatchStreamAdapter, SendableRecordBatchStream},
-    sql::{
-        unparser::dialect::{DefaultDialect, Dialect},
-        TableReference,
-    },
+    sql::unparser::dialect::{DefaultDialect, Dialect},
 };
 
 impl<T, P> SqlTable<T, P> {

@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use super::sql_table::{get_cte, DuckDBTable};
 use datafusion::{
+    common::TableReference,
     datasource::TableProvider,
     error::{DataFusionError, Result as DataFusionResult},
     execution::SendableRecordBatchStream,
     physical_plan::stream::RecordBatchStreamAdapter,
-    sql::TableReference,
 };
 
 impl<T, P> DuckDBTable<T, P> {

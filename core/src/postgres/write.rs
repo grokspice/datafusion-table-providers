@@ -5,6 +5,7 @@ use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use datafusion::{
     catalog::Session,
+    common::TableReference,
     common::{not_impl_err, Constraints, SchemaExt},
     datasource::{
         sink::{DataSink, DataSinkExec},
@@ -13,7 +14,6 @@ use datafusion::{
     execution::{SendableRecordBatchStream, TaskContext},
     logical_expr::{dml::InsertOp, Expr},
     physical_plan::{metrics::MetricsSet, DisplayAs, DisplayFormatType, ExecutionPlan},
-    sql::TableReference,
 };
 use futures::StreamExt;
 use snafu::prelude::*;

@@ -20,10 +20,10 @@ use datafusion::catalog::Session;
 use datafusion::{
     catalog::TableProviderFactory,
     common::Constraints,
+    common::TableReference,
     datasource::TableProvider,
     error::{DataFusionError, Result as DataFusionResult},
     logical_expr::CreateExternalTable,
-    sql::TableReference,
 };
 use futures::TryStreamExt;
 use rusqlite::{ToSql, Transaction};
@@ -1653,7 +1653,7 @@ pub(crate) mod tests {
         let external_table = CreateExternalTable {
             schema: df_schema,
             name: TableReference::bare("test_table"),
-            location: String::new(),
+            locations: vec![],
             file_type: String::new(),
             table_partition_cols: vec![],
             if_not_exists: true,

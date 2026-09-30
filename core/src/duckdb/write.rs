@@ -21,10 +21,10 @@ use arrow::{array::RecordBatch, datatypes::SchemaRef};
 use arrow_schema::ArrowError;
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::common::TableReference;
 use datafusion::common::{not_impl_err, Constraints, SchemaExt};
 use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::logical_expr::dml::InsertOp;
-use datafusion::sql::TableReference;
 use datafusion::{
     datasource::{TableProvider, TableType},
     error::DataFusionError,

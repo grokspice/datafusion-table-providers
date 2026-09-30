@@ -30,7 +30,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::{dml::InsertOp, CreateExternalTable};
 use datafusion::physical_plan::collect;
-use datafusion::sql::TableReference;
+use datafusion::common::TableReference;
 #[cfg(feature = "sqlite-federation")]
 use datafusion_federation::schema_cast::record_convert::try_cast_to;
 use datafusion_table_providers::util::test::MockExec;
@@ -70,7 +70,7 @@ async fn create_table_provider(
     let external_table = CreateExternalTable {
         schema: df_schema,
         name: TableReference::bare(table_name),
-        location: String::new(),
+        locations: vec![],
         file_type: String::new(),
         table_partition_cols: vec![],
         if_not_exists: true,
