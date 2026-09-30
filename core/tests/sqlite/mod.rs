@@ -602,3 +602,136 @@ mod sort_limit_pushdown {
         assert_eq!(total, 7, "LIMIT without ORDER BY must still cap rows");
     }
 }
+
+/// A function the configured `FunctionSupport` refuses must not be sent to
+/// `SQLite`: the SQL sent to `SQLite` carries only the scan, and DataFusion
+/// evaluates the function above it.
+#[cfg(feature = "sqlite-federation")]
+#[tokio::test]
+async fn test_sqlite_federation_keeps_unsupported_function_local() {
+    use datafusion::logical_expr::expr::ScalarFunction;
+    use datafusion_table_providers::sqlite::sql_table::SQLiteTable;
+    use datafusion_table_providers::util::supported_functions::FunctionSupport;
+
+    let table_name = "unsupported_function_test";
+    let schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Utf8, true)]));
+    let record_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec![
+            Some("x"),
+            None,
+            Some("y"),
+        ]))],
+    )
+    .expect("record batch should be created");
+
+    let pool = SqliteConnectionPoolFactory::new(
+        ":memory:",
+        Mode::Memory,
+        std::time::Duration::from_millis(5000),
+    )
+    .build()
+    .await
+    .expect("Sqlite connection pool to be created");
+    let conn = pool
+        .connect()
+        .await
+        .expect("Sqlite connection should be established");
+    let conn = conn.as_async().expect("async connection");
+    let create_table_stmts =
+        CreateTableBuilder::new(Arc::clone(&schema), table_name).build_sqlite();
+    let insert_table_stmt =
+        InsertBuilder::new(&TableReference::from(table_name), &vec![record_batch])
+            .build_sqlite(None)
+            .expect("SQLite insert statement should be constructed");
+    conn.execute(&create_table_stmts, &[])
+        .await
+        .expect("Sqlite table should be created");
+    conn.execute(&insert_table_stmt, &[])
+        .await
+        .expect("Sqlite data should be inserted");
+
+    let no_upper = FunctionSupport::new(None, None, None).with_scalar_call_support(Arc::new(
+        |call: &ScalarFunction, _: Option<&datafusion::common::DFSchema>| {
+            call.func.name() != "upper"
+        },
+    ));
+    let pool: Arc<DynSqliteConnectionPool> = Arc::new(pool);
+    let table = Arc::new(
+        SQLiteTable::new_with_schema(&pool, Arc::clone(&schema), table_name, None)
+            .with_function_support(Some(no_upper)),
+    )
+    .create_federated_table_provider()
+    .expect("federated table provider");
+
+    let ctx = SessionContext::new_with_state(datafusion_federation::default_session_state());
+    ctx.register_table(table_name, Arc::new(table))
+        .expect("table should be registered");
+
+    // Control: a function the policy allows is pushed down, so federation is
+    // active in this session and the check below is not vacuous.
+    let allowed_display = plan_display(&ctx, &format!("SELECT lower(b) FROM {table_name}")).await;
+    assert!(
+        allowed_display
+            .lines()
+            .any(|line| line.contains("VirtualExecutionPlan") && line.contains("lower(")),
+        "an allowed function must be pushed to SQLite:\n{allowed_display}"
+    );
+
+    let query = format!("SELECT upper(b) AS u FROM {table_name} ORDER BY u");
+    let display = plan_display(&ctx, &query).await;
+    assert!(
+        display
+            .lines()
+            .filter(|line| line.contains("VirtualExecutionPlan") || line.contains("SQLiteSqlExec"))
+            .all(|line| !line.to_lowercase().contains("upper")),
+        "the unsupported function must not be pushed to SQLite:\n{display}"
+    );
+    assert!(
+        display
+            .lines()
+            .any(|line| line.contains("ProjectionExec") && line.contains("upper")),
+        "the function must be evaluated locally:\n{display}"
+    );
+
+    let batches = ctx
+        .sql(&query)
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should run");
+    let values: Vec<Option<String>> = batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("upper returns Utf8")
+                .iter()
+                .map(|v| v.map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        values,
+        vec![Some("X".to_string()), Some("Y".to_string()), None],
+        "rows must be computed locally with SQL NULL semantics"
+    );
+}
+
+#[cfg(feature = "sqlite-federation")]
+async fn plan_display(ctx: &SessionContext, sql: &str) -> String {
+    let physical_plan = ctx
+        .sql(sql)
+        .await
+        .expect("query should plan")
+        .create_physical_plan()
+        .await
+        .expect("physical plan should be created");
+    let display = datafusion::physical_plan::displayable(physical_plan.as_ref())
+        .indent(true)
+        .to_string();
+    display
+}
