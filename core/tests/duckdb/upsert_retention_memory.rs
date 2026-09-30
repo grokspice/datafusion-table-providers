@@ -544,7 +544,7 @@ fn spawn_readers(
             tokio::spawn(async move {
                 let mut round: u64 = 0;
                 while !stop.load(Ordering::Relaxed) {
-                    let sql = if round % 2 == 0 {
+                    let sql = if round.is_multiple_of(2) {
                         format!(
                             "SELECT count(id), sum(group_id) FROM {table_name} \
                              WHERE deleted = 'false'"
