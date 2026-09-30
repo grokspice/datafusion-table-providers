@@ -100,6 +100,12 @@ sea-query = { git = "https://github.com/spiceai/sea-query.git", rev = "ae75baef8
 rusqlite = { git = "https://github.com/spiceai/rusqlite.git", rev = "3f98225d35735a61a5875d356774d246a8b0c037" } # spiceai-v0.40.0
 tokio-rusqlite = { git = "https://github.com/spiceai/tokio-rusqlite.git", rev = "b10df82e3bbc4f4700562a14a3a00714cbc2f0c7" } # rusqlite 0.40-compatible (matches spiceai/spiceai)
 
+# ADBC 24 with Spice patches — branch: spiceai-24-patches. Spice links this crate against its
+# ADBC fork (a statement cancel can reach a running query), so the tests here run against it.
+adbc_core = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "3b78b62a286e53a650ddf5bed11fb0feb5ffb79a" }
+adbc_driver_manager = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "3b78b62a286e53a650ddf5bed11fb0feb5ffb79a" }
+adbc_ffi = { git = "https://github.com/spiceai/arrow-adbc.git", rev = "3b78b62a286e53a650ddf5bed11fb0feb5ffb79a" }
+
 # arrow-rs 59 with spice patches (ObjectVersionType + new_with_meta for Azure compatibility) — branch: spiceai-59-patches
 arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
 arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
