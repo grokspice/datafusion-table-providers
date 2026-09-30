@@ -148,7 +148,13 @@ impl TableProviderFactory for FlightTableFactory {
         _state: &dyn Session,
         cmd: &CreateExternalTable,
     ) -> datafusion::common::Result<Arc<dyn TableProvider>> {
-        let table = self.open_table(&cmd.location, cmd.options.clone()).await?;
+        let [location] = cmd.locations.as_slice() else {
+            return Err(DataFusionError::Configuration(format!(
+                "Flight tables support exactly one location, but {} were given",
+                cmd.locations.len()
+            )));
+        };
+        let table = self.open_table(location, cmd.options.clone()).await?;
         Ok(Arc::new(table))
     }
 }

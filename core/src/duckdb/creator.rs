@@ -8,7 +8,7 @@ use arrow::{
     ffi_stream::FFI_ArrowArrayStream,
 };
 use datafusion::common::Constraints;
-use datafusion::sql::TableReference;
+use datafusion::common::TableReference;
 use duckdb::Transaction;
 use itertools::Itertools;
 use snafu::prelude::*;

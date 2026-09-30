@@ -21,7 +21,7 @@ use crate::sql::{
 };
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
-use datafusion::{datasource::TableProvider, sql::TableReference};
+use datafusion::{common::TableReference, datasource::TableProvider};
 use snafu::prelude::*;
 use std::sync::Arc;
 

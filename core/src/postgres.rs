@@ -23,10 +23,10 @@ use datafusion::sql::unparser::dialect::PostgreSqlDialect;
 use datafusion::{
     catalog::TableProviderFactory,
     common::Constraints,
+    common::TableReference,
     datasource::TableProvider,
     error::{DataFusionError, Result as DataFusionResult},
     logical_expr::CreateExternalTable,
-    sql::TableReference,
 };
 use snafu::prelude::*;
 use std::{collections::HashMap, sync::Arc};

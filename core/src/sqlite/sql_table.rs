@@ -14,6 +14,7 @@ use crate::sql::sql_provider_datafusion::{
 };
 use datafusion::{
     arrow::datatypes::SchemaRef,
+    common::TableReference,
     config::ConfigOptions,
     datasource::TableProvider,
     error::{DataFusionError, Result as DataFusionResult},
@@ -26,7 +27,6 @@ use datafusion::{
         stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
-    sql::TableReference,
 };
 
 pub struct SQLiteTable<T: 'static, P: 'static> {
@@ -184,6 +184,17 @@ impl<T: 'static, P: 'static> ExecutionPlan for SQLiteSqlExec<T, P> {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.base_exec.children()
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(
+            &Arc<dyn datafusion::physical_plan::PhysicalExpr>,
+        ) -> datafusion::common::Result<
+            datafusion::common::tree_node::TreeNodeRecursion,
+        >,
+    ) -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        self.base_exec.apply_expressions(f)
     }
 
     fn with_new_children(

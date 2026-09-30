@@ -124,7 +124,7 @@ mod tests {
     use clickhouse::Client;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::Constraints;
-    use datafusion::sql::TableReference;
+    use datafusion::common::TableReference;
 
     fn new_clickhouse_table(args: Option<Vec<(String, Arg)>>) -> ClickHouseTable {
         let pool = Arc::new(ClickHouseConnectionPool {

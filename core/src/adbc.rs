@@ -30,10 +30,10 @@ use datafusion::optimizer::OptimizerRule;
 use datafusion::sql::unparser::dialect::Dialect;
 use datafusion::{
     catalog::Session,
+    common::TableReference,
     datasource::{sink::DataSinkExec, TableProvider},
     logical_expr::dml::InsertOp,
     physical_plan::ExecutionPlan,
-    sql::TableReference,
 };
 use r2d2_adbc::AdbcConnectionManager;
 use snafu::prelude::*;

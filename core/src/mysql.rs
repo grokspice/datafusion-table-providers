@@ -33,8 +33,8 @@ use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::sql::unparser::dialect::MySqlDialect;
 use datafusion::{
-    catalog::TableProviderFactory, common::Constraints, datasource::TableProvider,
-    error::DataFusionError, logical_expr::CreateExternalTable, sql::TableReference,
+    catalog::TableProviderFactory, common::Constraints, common::TableReference,
+    datasource::TableProvider, error::DataFusionError, logical_expr::CreateExternalTable,
 };
 use mysql_async::prelude::{Queryable, ToValue};
 use mysql_async::{Metrics, TxOpts};
