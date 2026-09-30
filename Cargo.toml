@@ -101,19 +101,19 @@ rusqlite = { git = "https://github.com/spiceai/rusqlite.git", rev = "3f98225d357
 tokio-rusqlite = { git = "https://github.com/spiceai/tokio-rusqlite.git", rev = "b10df82e3bbc4f4700562a14a3a00714cbc2f0c7" } # rusqlite 0.40-compatible (matches spiceai/spiceai)
 
 # arrow-rs 59 with spice patches (ObjectVersionType + new_with_meta for Azure compatibility) — branch: spiceai-59-patches
-arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-buffer = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-cast = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-csv = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-data = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-flight = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-ipc = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-json = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-ord = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-row = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-schema = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-select = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-arrow-string = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
-parquet = { git = "https://github.com/spiceai/arrow-rs.git", rev = "1e4a1d355a0b4c9ef917c5eec6ed2f88b670a0ff" }
+arrow = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-arith = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-array = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-buffer = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-cast = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-csv = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-data = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-flight = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-ipc = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-json = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-ord = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-row = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-schema = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-select = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+arrow-string = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
+parquet = { git = "https://github.com/spiceai/arrow-rs.git", rev = "db730b42c4b84ef47c4a00800de35fff363874e5" }
