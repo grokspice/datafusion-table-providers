@@ -5,8 +5,7 @@ version = 4
 [[package]]
 name = "adbc_core"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "365059b13a01bbf6f324b5bfe328232a819679731431f78105e2883256236858"
+source = "git+https://github.com/spiceai/arrow-adbc.git?rev=3b78b62a286e53a650ddf5bed11fb0feb5ffb79a#3b78b62a286e53a650ddf5bed11fb0feb5ffb79a"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -15,8 +14,7 @@ dependencies = [
 [[package]]
 name = "adbc_driver_manager"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aac8bb789ff1f493bcb5d423c65b7a1b21ba5516f5e60797b4e1c64b34a2b61"
+source = "git+https://github.com/spiceai/arrow-adbc.git?rev=3b78b62a286e53a650ddf5bed11fb0feb5ffb79a#3b78b62a286e53a650ddf5bed11fb0feb5ffb79a"
 dependencies = [
  "adbc_core",
  "adbc_ffi",
@@ -27,14 +25,13 @@ dependencies = [
  "regex",
  "toml",
  "windows-registry",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "adbc_ffi"
 version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12cdef84c12e9e8858b300440c36ca94ba24fb2e188175251dc39bb44ba3584e"
+source = "git+https://github.com/spiceai/arrow-adbc.git?rev=3b78b62a286e53a650ddf5bed11fb0feb5ffb79a#3b78b62a286e53a650ddf5bed11fb0feb5ffb79a"
 dependencies = [
  "adbc_core",
  "arrow-array",
