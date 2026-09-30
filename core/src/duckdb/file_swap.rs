@@ -1445,7 +1445,7 @@ mod tests {
                         match conn.query_row("SELECT COUNT(1) FROM peer_data", [], |r| {
                             r.get::<usize, i64>(0)
                         }) {
-                            Ok(rows) if rows == 2 => {}
+                            Ok(2) => {}
                             Ok(rows) => {
                                 errors
                                     .lock()

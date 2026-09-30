@@ -960,7 +960,7 @@ async fn test_mongodb_sort_limit(port: usize) {
     let _ = collection.drop().await;
 
     // Insert 20 documents with id = 1..=20.
-    let docs: Vec<Document> = (1..=20).map(|i| doc! { "id": i as i32 }).collect();
+    let docs: Vec<Document> = (1..=20_i32).map(|i| doc! { "id": i }).collect();
     collection
         .insert_many(docs)
         .await
