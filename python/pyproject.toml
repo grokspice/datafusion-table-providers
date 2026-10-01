@@ -24,7 +24,7 @@ classifier = [
     "Programming Language :: Python",
     "Programming Language :: Rust",
 ]
-dependencies = ["datafusion>=54.0.0,<55.0.0"]
+dependencies = ["datafusion>=55.0.0,<56.0.0"]
 
 [project.urls]
 repository = "https://github.com/datafusion-contrib/datafusion-table-providers"
@@ -57,6 +57,13 @@ max-doc-length = 88
 "dev/*" = ["D"]
 "benchmarks/*" = ["D", "F"]
 "docs/*" = ["D"]
+
+# datafusion-python 55.0.0 is not on PyPI yet. Until it is, build it from the
+# apache/datafusion-python commit that versioned it 55.0.0 (DataFusion 55.1.0),
+# so the FFI capsules this extension exports match the consumer. Drop this
+# once 55.0.0 is published.
+[tool.uv.sources]
+datafusion = { git = "https://github.com/apache/datafusion-python", rev = "5ef2856f5b02cddcd3d7d3559669d95ef181ccf4" }
 
 [dependency-groups]
 dev = [
