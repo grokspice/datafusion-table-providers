@@ -9,6 +9,10 @@ test:
 lint:
 	cargo clippy --all-features
 
+.PHONY: test-integration-duckdb
+test-integration-duckdb:
+	RUST_LOG=info cargo test --release --test integration --no-default-features --features duckdb,duckdb-federation -- --nocapture --test-threads 1
+
 .PHONY: test-integration
 test-integration:
 	RUST_LOG=debug cargo test --test integration --no-default-features --features postgres,sqlite,mysql,flight,clickhouse,mongodb,adbc -- --nocapture

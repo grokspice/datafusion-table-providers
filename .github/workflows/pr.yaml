@@ -148,6 +148,33 @@ jobs:
       - name: Run tests
         run: make test
 
+  duckdb-integration-test:
+    name: DuckDB Tests (release, attempt ${{ matrix.attempt }})
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The upsert + retention soak fails intermittently; several attempts
+        # per push give a failure rate rather than a single sample.
+        attempt: [1, 2, 3, 4, 5]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Its own cache entry: this is the only job that builds in release
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: duckdb-release
+
+      - name: Run DuckDB integration tests
+        run: make test-integration-duckdb
+
   python-integration-test:
     name: Python Tests
     runs-on: ubuntu-latest
