@@ -522,10 +522,9 @@ fn parse_timezone_offset_seconds(tz: &str) -> Option<i32> {
 
     let (sign, rest) = if let Some(stripped) = tz.strip_prefix('+') {
         (1, stripped)
-    } else if let Some(stripped) = tz.strip_prefix('-') {
-        (-1, stripped)
     } else {
-        return None;
+        let stripped = tz.strip_prefix('-')?;
+        (-1, stripped)
     };
 
     let parts: Vec<&str> = rest.split(':').collect();
@@ -1869,5 +1868,16 @@ pub(crate) mod tests {
             .query_row(r#"SELECT SUM("we""ird") FROM "tbl""#, [], |r| r.get(0))
             .expect("should read the rows back");
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_parse_timezone_offset_seconds() {
+        assert_eq!(parse_timezone_offset_seconds("+10:00"), Some(36_000));
+        assert_eq!(parse_timezone_offset_seconds("-05:30"), Some(-19_800));
+        assert_eq!(parse_timezone_offset_seconds(" +00:00 "), Some(0));
+        assert_eq!(parse_timezone_offset_seconds("05:30"), None);
+        assert_eq!(parse_timezone_offset_seconds("-0530"), None);
+        assert_eq!(parse_timezone_offset_seconds("-xx:30"), None);
+        assert_eq!(parse_timezone_offset_seconds(""), None);
     }
 }
