@@ -48,6 +48,9 @@ pub enum Error {
     #[snafu(display("Failed to extract row value: {source}"))]
     FailedToExtractRowValue { source: rusqlite::Error },
 
+    #[snafu(display("Failed to read the next row: {source}"))]
+    FailedToReadRow { source: rusqlite::Error },
+
     #[snafu(display("Failed to extract column name: {source}"))]
     FailedToExtractColumnName { source: rusqlite::Error },
 
@@ -64,7 +67,10 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 ///
 /// # Errors
 ///
-/// Returns an error if there is a failure in converting the rows to a `RecordBatch`.
+/// Returns the error SQLite raises while producing a row, such as `integer overflow`
+/// from a `SUM`, rather than treating it as the end of the rows: the rows read so far
+/// are never returned as if they were the whole answer. Also returns an error if the
+/// rows cannot be converted to a `RecordBatch`.
 pub fn rows_to_arrow(
     mut rows: Rows,
     num_cols: usize,
@@ -75,7 +81,7 @@ pub fn rows_to_arrow(
     let mut arrow_types: Vec<DataType> = Vec::new();
     let mut row_count = 0;
 
-    if let Ok(Some(row)) = rows.next() {
+    if let Some(row) = rows.next().context(FailedToReadRowSnafu)? {
         for i in 0..num_cols {
             let mut column_type = row
                 .get_ref(i)
@@ -131,7 +137,7 @@ pub fn rows_to_arrow(
         row_count += 1;
     };
 
-    while let Ok(Some(row)) = rows.next() {
+    while let Some(row) = rows.next().context(FailedToReadRowSnafu)? {
         add_row_to_builders(row, &arrow_types, &mut arrow_columns_builders)?;
         row_count += 1;
     }
@@ -471,5 +477,48 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .expect("Int64 array");
         assert_eq!((col.value(0), col.value(1)), (i64::MIN, i64::MAX));
+    }
+
+    /// SQLite raises `integer overflow` while producing the only row of an
+    /// ungrouped `SUM`: the statement fails, rather than answering with no rows.
+    #[test]
+    fn an_error_sqlite_raises_on_the_first_row_fails_the_read() {
+        let err = query_to_arrow(
+            "SELECT sum(v) AS s FROM (SELECT 9000000000000000000 AS v UNION ALL SELECT 9000000000000000000)",
+            Some(int64_schema("s")),
+        )
+        .expect_err("the overflow SQLite raises must be returned, not an empty batch");
+        assert!(
+            matches!(err, Error::FailedToReadRow { .. }),
+            "unexpected error variant: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "Failed to read the next row: integer overflow"
+        );
+    }
+
+    /// SQLite raises the error only after a row was already produced: the rows read
+    /// so far are not returned as a truncated answer.
+    #[test]
+    fn an_error_sqlite_raises_after_a_row_fails_the_read() {
+        // The scalar subquery is evaluated per outer row, so row `v = 1` is produced
+        // before the overflow fires on row `v = 2`.
+        let sql = concat!(
+            "SELECT CASE WHEN v = 1 THEN 1 ",
+            "ELSE (SELECT sum(x) FROM (SELECT 9000000000000000000 AS x UNION ALL SELECT 9000000000000000000)) END AS w ",
+            "FROM (SELECT 1 AS v UNION ALL SELECT 2 ORDER BY 1)"
+        );
+        let err = query_to_arrow(sql, Some(int64_schema("w"))).expect_err(
+            "the overflow SQLite raises after the first row must be returned, not a one-row batch",
+        );
+        assert!(
+            matches!(err, Error::FailedToReadRow { .. }),
+            "unexpected error variant: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "Failed to read the next row: integer overflow"
+        );
     }
 }

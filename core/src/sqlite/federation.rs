@@ -134,3 +134,102 @@ impl<T, P> SQLExecutor for SQLiteTable<T, P> {
             .map_err(to_execution_error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::common::TableReference;
+    use datafusion::execution::context::SessionContext;
+
+    use crate::sql::arrow_sql_gen::statement::{CreateTableBuilder, InsertBuilder};
+    use crate::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
+    use crate::sql::db_connection_pool::{DbConnectionPool, Mode};
+    use crate::sqlite::sql_table::SQLiteTable;
+    use crate::sqlite::DynSqliteConnectionPool;
+
+    /// A federated session over an in-memory SQLite table holding `batch`.
+    async fn federated_session(table: &str, batch: RecordBatch) -> SessionContext {
+        let schema = batch.schema();
+        let pool = SqliteConnectionPoolFactory::new(
+            ":memory:",
+            Mode::Memory,
+            std::time::Duration::from_millis(5000),
+        )
+        .build()
+        .await
+        .expect("pool");
+        let conn = pool.connect().await.expect("connection");
+        let conn = conn.as_async().expect("async connection");
+        conn.execute(
+            &CreateTableBuilder::new(Arc::clone(&schema), table).build_sqlite(),
+            &[],
+        )
+        .await
+        .expect("table created");
+        conn.execute(
+            &InsertBuilder::new(&TableReference::from(table), &vec![batch])
+                .build_sqlite(None)
+                .expect("insert statement"),
+            &[],
+        )
+        .await
+        .expect("rows inserted");
+        let pool: Arc<DynSqliteConnectionPool> = Arc::new(pool);
+        let provider = Arc::new(SQLiteTable::new_with_schema(&pool, schema, table, None))
+            .create_federated_table_provider()
+            .expect("federated provider");
+        let ctx = SessionContext::new_with_state(datafusion_federation::default_session_state());
+        ctx.register_table(table, Arc::new(provider))
+            .expect("table registered");
+        ctx
+    }
+
+    /// An error SQLite raises while running a federated statement fails the query
+    /// instead of answering with the rows produced before it: an ungrouped `SUM`
+    /// that overflows `i64` must not come back as an empty result.
+    #[tokio::test]
+    async fn an_error_sqlite_raises_mid_query_fails_the_federated_query() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(Int64Array::from(vec![9_000_000_000_000_000_000_i64; 3])),
+            ],
+        )
+        .expect("batch");
+        let ctx = federated_session("ovf", batch).await;
+        let df = ctx
+            .sql("SELECT sum(v) AS s FROM ovf")
+            .await
+            .expect("the query plans");
+        let plan = df
+            .clone()
+            .create_physical_plan()
+            .await
+            .expect("physical plan");
+        let display = datafusion::physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(
+            display.contains("VirtualExecutionPlan") && display.contains("sum("),
+            "the SUM must be pushed down to SQLite for the overflow to be its error:
+{display}"
+        );
+        let err = df
+            .collect()
+            .await
+            .expect_err("SQLite's integer overflow must fail the query");
+        assert!(
+            err.to_string()
+                .contains("Failed to read the next row: integer overflow"),
+            "unexpected error: {err}"
+        );
+    }
+}
