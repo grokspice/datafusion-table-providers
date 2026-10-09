@@ -2790,10 +2790,11 @@ mod test {
         );
     }
 
-    /// The written data may carry a key as another type than the table's; the
-    /// insert casts it, so `"01"` and `"1"` into a `BIGINT` key are one key.
+    /// The written data may carry a key as a type the insert converts on its
+    /// own terms (text into a `BIGINT`); every row then gets a statement of its
+    /// own, and `"01"` and `"1"` still resolve to the last copy of key 1.
     #[test]
-    fn upsert_compares_a_key_written_as_another_type_as_the_tables_type() {
+    fn upsert_keeps_the_last_copy_of_a_key_written_as_text_into_a_bigint() {
         let _guard = init_tracing(None);
         let pool = get_mem_duckdb();
         single_threaded(&pool);
@@ -2826,18 +2827,17 @@ mod test {
             )
             .expect("should create a record batch")
         };
-        let (sender, receiver) = mpsc::channel(2);
+        let (sender, receiver) = mpsc::channel(1);
         sender
-            .try_send(batch(&[("01", "first")]))
+            .try_send(batch(&[("01", "first"), ("2", "other"), ("1", "last")]))
             .expect("to queue");
-        sender.try_send(batch(&[("1", "last")])).expect("to queue");
         drop(sender);
         let on_conflict = upsert_on_id();
         write_to_table(&table, &tx, written, receiver, Some(&on_conflict)).expect("to write");
 
         assert_eq!(
             count_and_name(&tx, &table.table_name().to_string(), "id = 1"),
-            (1, Some("last".to_string()))
+            (2, Some("last".to_string()))
         );
     }
 }

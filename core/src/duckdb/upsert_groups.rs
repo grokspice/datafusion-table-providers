@@ -87,6 +87,9 @@ struct UpsertGroups {
     /// Each key column's position in the written data, and the table's type
     /// for it, which the written column is cast to before it is compared.
     keys: Vec<(usize, DataType)>,
+    /// A key column is written as a type whose conversion to the table's the
+    /// insert may not perform as arrow does, so no two rows share a statement.
+    isolate_rows: bool,
     converter: RowConverter,
     /// Hashes of the keys the current statement holds.
     seen: HashSet<u64>,
@@ -128,6 +131,9 @@ impl UpsertGroups {
                 Ok((index, table_schema.field(index).data_type().clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let isolate_rows = keys.iter().any(|(index, data_type)| {
+            !converts_exactly(schema.field(*index).data_type(), data_type)
+        });
         let converter = RowConverter::new(
             keys.iter()
                 .map(|(_, data_type)| SortField::new(canonical_type(data_type)))
@@ -136,6 +142,7 @@ impl UpsertGroups {
         Ok(Self {
             source,
             keys,
+            isolate_rows,
             converter,
             seen: HashSet::new(),
             max_keys: MAX_KEYS_PER_STATEMENT,
@@ -191,6 +198,16 @@ impl UpsertGroups {
     /// (or that would take it past `max_keys`), recording the keys of the rows
     /// before it.
     fn first_repeat(&mut self, hashes: &[u64]) -> Option<usize> {
+        if self.isolate_rows {
+            // One row per statement: an empty statement admits its first row, and
+            // the row after it ends the statement.
+            let first = hashes.first()?;
+            if !self.seen.is_empty() {
+                return Some(0);
+            }
+            self.seen.insert(*first);
+            return (hashes.len() > 1).then_some(1);
+        }
         hashes
             .iter()
             .position(|hash| self.seen.len() >= self.max_keys || !self.seen.insert(*hash))
@@ -198,9 +215,8 @@ impl UpsertGroups {
 
     /// The hash of each row's key; a NULL is encoded like any value. A key
     /// column of another type than the table's is cast to it first, as the
-    /// insert casts it, so `"01"` and `"1"` written to a `BIGINT` key are one
-    /// key; a value the cast cannot convert compares as NULL, which only ends
-    /// a statement early.
+    /// insert casts it; see [`converts_exactly`] for the casts trusted to
+    /// agree with `DuckDB`'s.
     fn key_hashes(&self, batch: &RecordBatch) -> Result<Vec<u64>, ArrowError> {
         let columns = self
             .keys
@@ -223,6 +239,46 @@ impl UpsertGroups {
                 hasher.finish()
             })
             .collect())
+    }
+}
+
+/// Whether arrow's cast of a key `written` as one type to the table's
+/// `stored` type gives the value `DuckDB`'s insert gives it, so two written
+/// values are one key exactly when the table holds them as one. Only exact
+/// conversions are trusted: no change, a string or binary spelling, a dictionary
+/// or run-end encoding of a trusted type, an integer or float widened, a
+/// timestamp given a time zone, and a `Date32` widened. Anything else, such as
+/// a float written to an integer key (arrow truncates `1.6`, `DuckDB` rounds
+/// it) or text written to a date, is not: such a write puts every row in a
+/// statement of its own, which is slow and right.
+fn converts_exactly(written: &DataType, stored: &DataType) -> bool {
+    use DataType::{
+        Binary, BinaryView, Date32, Date64, Dictionary, Float32, Float64, Int16, Int32, Int64,
+        Int8, LargeBinary, LargeUtf8, RunEndEncoded, Timestamp, UInt16, UInt32, UInt64, UInt8,
+        Utf8, Utf8View,
+    };
+    match (written, stored) {
+        (written, stored) if written == stored => true,
+        (Dictionary(_, written), stored) => converts_exactly(written, stored),
+        (RunEndEncoded(_, written), stored) => converts_exactly(written.data_type(), stored),
+        (Timestamp(written_unit, None), Timestamp(stored_unit, Some(_))) => {
+            written_unit == stored_unit
+        }
+        (Utf8 | LargeUtf8 | Utf8View, stored) => matches!(stored, Utf8 | LargeUtf8 | Utf8View),
+        (Binary | LargeBinary | BinaryView, stored) => {
+            matches!(stored, Binary | LargeBinary | BinaryView)
+        }
+        (Int8, stored) => matches!(stored, Int16 | Int32 | Int64 | Float32 | Float64),
+        (Int16, stored) => matches!(stored, Int32 | Int64 | Float32 | Float64),
+        (Int32, stored) => matches!(stored, Int64 | Float64),
+        (UInt8, stored) => matches!(
+            stored,
+            UInt16 | UInt32 | UInt64 | Int16 | Int32 | Int64 | Float32 | Float64
+        ),
+        (UInt16, stored) => matches!(stored, UInt32 | UInt64 | Int32 | Int64 | Float32 | Float64),
+        (UInt32, stored) => matches!(stored, UInt64 | Int64 | Float64),
+        (Float32, Float64) | (Date32, Date64) => true,
+        _ => false,
     }
 }
 
@@ -955,9 +1011,9 @@ mod tests {
     }
 
     #[test]
-    fn a_key_written_as_another_type_is_compared_as_the_tables_type() {
+    fn a_key_written_as_a_type_the_insert_converts_inexactly_isolates_every_row() {
         // The table's key is BIGINT; the written data carries it as text, which the
-        // insert casts: "01" and "1" are one key.
+        // insert converts on its own terms, so no two rows share a statement.
         let table_schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("v", DataType::Utf8, true),
@@ -993,11 +1049,71 @@ mod tests {
             },
         )
         .expect("write");
-        assert_eq!(
-            sizes,
-            vec![2, 2, 1],
-            "\"1\" repeats \"01\"; \"x\" and \"y\" do not convert and compare as one NULL, so \
-             \"y\" starts a statement"
+        assert_eq!(sizes, vec![1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_key_written_as_a_narrower_integer_is_compared_as_the_tables_integer() {
+        // The table's key is BIGINT; the written data carries it as INTEGER, which
+        // the insert widens exactly, so the rows group by value.
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+        ]);
+        let written = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("v", DataType::Utf8, true),
+        ]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(Int32Array::from(ids.clone())),
+                    Arc::new(StringArray::from(vec!["v"; ids.len()])),
+                ],
+            )
+            .expect("batch")
+        };
+        let mut sizes = Vec::new();
+        write_statements(
+            source(vec![batch(vec![1, 2]), batch(vec![3]), batch(vec![1])]),
+            &written,
+            &table_schema,
+            ["id"],
+            |reader| {
+                let rows: u64 = reader.map(|b| b.expect("batch").num_rows() as u64).sum();
+                sizes.push(rows);
+                Ok::<u64, ArrowError>(rows)
+            },
+        )
+        .expect("write");
+        assert_eq!(sizes, vec![3, 1]);
+    }
+
+    #[test]
+    fn only_exact_conversions_are_trusted() {
+        use DataType::{Date32, Date64, Float64, Int32, Int64, Timestamp, UInt64, Utf8, Utf8View};
+        assert!(converts_exactly(&Int32, &Int64));
+        assert!(converts_exactly(&Utf8View, &Utf8));
+        assert!(converts_exactly(&Date32, &Date64));
+        assert!(converts_exactly(
+            &Timestamp(TimeUnit::Microsecond, None),
+            &Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        ));
+        assert!(
+            !converts_exactly(&Float64, &Int64),
+            "arrow truncates, DuckDB rounds"
         );
+        assert!(!converts_exactly(&Int64, &Int32), "narrowing");
+        assert!(!converts_exactly(&UInt64, &Int64), "half the range");
+        assert!(
+            !converts_exactly(&Utf8, &Int64),
+            "text parsed on the insert's terms"
+        );
+        assert!(!converts_exactly(&Utf8, &Date32));
+        assert!(!converts_exactly(
+            &Timestamp(TimeUnit::Nanosecond, None),
+            &Timestamp(TimeUnit::Microsecond, None)
+        ));
     }
 }
