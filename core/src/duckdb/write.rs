@@ -991,9 +991,13 @@ pub(super) fn write_to_table(
     on_conflict: Option<&OnConflict>,
 ) -> datafusion::common::Result<u64> {
     if let Some(OnConflict::Upsert(target)) = on_conflict {
-        return upsert_groups::write_statements(data_batches, &schema, target.iter(), |reader| {
-            insert_from_reader(table, tx, reader, on_conflict)
-        });
+        return upsert_groups::write_statements(
+            data_batches,
+            &schema,
+            &table.table_definition().schema(),
+            target.iter(),
+            |reader| insert_from_reader(table, tx, reader, on_conflict),
+        );
     }
     insert_from_reader(
         table,
@@ -2732,6 +2736,57 @@ mod test {
         assert_eq!(
             count_and_name(&tx, &table.table_name().to_string(), "id IS NULL"),
             (3, Some("a,b".to_string()))
+        );
+    }
+
+    /// The insert is positional, so the written data may name its columns
+    /// differently from the table; the conflict target is the table's column.
+    #[test]
+    fn upsert_resolves_the_conflict_target_against_the_table_not_the_written_names() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let table_definition = upsert_table_definition("upsert_renamed_input", &upsert_schema());
+        let mut conn = pool.connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+
+        let written: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("source_id", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("source_name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let batch = |rows: &[(i64, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(Int64Array::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .try_send(batch(&[(0, "first"), (1, "first")]))
+            .expect("to queue");
+        sender.try_send(batch(&[(0, "last")])).expect("to queue");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(&table, &tx, written, receiver, Some(&on_conflict)).expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id = 0"),
+            (2, Some("last".to_string()))
         );
     }
 }

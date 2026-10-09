@@ -42,12 +42,17 @@ use tokio::sync::mpsc::Receiver;
 const MAX_KEYS_PER_STATEMENT: usize = 1 << 20;
 
 /// Writes every batch of `source` as one `insert` per statement, cutting
-/// statements at the first row whose key (the `key_columns` of `schema`) an
-/// earlier row of the same statement carried. Returns the rows `insert`
-/// reported in total.
+/// statements at the first row whose key an earlier row of the same statement
+/// carried. Returns the rows `insert` reported in total.
+///
+/// `schema` is the written data's. The key is the `key_columns` of the
+/// destination's `table_schema`, taken from the written data by position: the
+/// insert is positional (`INSERT INTO table SELECT * FROM …`), so the written
+/// data may name its columns differently.
 pub(super) fn write_statements<'a, E>(
     source: Receiver<RecordBatch>,
     schema: &SchemaRef,
+    table_schema: &Schema,
     key_columns: impl IntoIterator<Item = &'a str>,
     mut insert: impl FnMut(Box<dyn RecordBatchReader + Send>) -> Result<u64, E>,
 ) -> Result<u64, E>
@@ -57,6 +62,7 @@ where
     let groups = Arc::new(Mutex::new(UpsertGroups::try_new(
         source,
         schema,
+        table_schema,
         key_columns,
     )?));
     let mut rows = 0;
@@ -95,16 +101,30 @@ struct UpsertGroups {
 }
 
 impl UpsertGroups {
-    /// Groups `source` by the conflict target `key_columns`, matched to `schema`
-    /// the way `DuckDB` matches an identifier: exactly, else ignoring ASCII case.
+    /// Groups `source` by the conflict target `key_columns`, matched to the
+    /// destination's `table_schema` the way `DuckDB` matches an identifier
+    /// (exactly, else ignoring ASCII case) and read from the written data, of
+    /// `schema`, by position.
     fn try_new<'a>(
         source: Receiver<RecordBatch>,
         schema: &Schema,
+        table_schema: &Schema,
         key_columns: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, ArrowError> {
         let key_indices = key_columns
             .into_iter()
-            .map(|column| key_index(schema, column))
+            .map(|column| {
+                let index = key_index(table_schema, column)?;
+                if index >= schema.fields().len() {
+                    return Err(ArrowError::SchemaError(format!(
+                        "on_conflict column '{column}' is column {} of the table, but the \
+                         written data has only {} columns",
+                        index + 1,
+                        schema.fields().len()
+                    )));
+                }
+                Ok(index)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let converter = RowConverter::new(
             key_indices
@@ -193,9 +213,9 @@ impl UpsertGroups {
     }
 }
 
-/// The index of the field `column` names: the field with exactly that name,
-/// else the only one equal to it ignoring ASCII case, which is how `DuckDB`
-/// matches the conflict target to a column.
+/// The index of the field of the table's `schema` that `column` names: the
+/// field with exactly that name, else the only one equal to it ignoring ASCII
+/// case, which is how `DuckDB` matches the conflict target to a column.
 fn key_index(schema: &Schema, column: &str) -> Result<usize, ArrowError> {
     if let Ok(index) = schema.index_of(column) {
         return Ok(index);
@@ -209,11 +229,11 @@ fn key_index(schema: &Schema, column: &str) -> Result<usize, ArrowError> {
     match (matches.next(), matches.next()) {
         (Some(index), None) => Ok(index),
         (None, _) => Err(ArrowError::SchemaError(format!(
-            "on_conflict column '{column}' is not a column of the written data"
+            "on_conflict column '{column}' is not a column of the table"
         ))),
         (Some(_), Some(_)) => Err(ArrowError::SchemaError(format!(
-            "on_conflict column '{column}' matches more than one column of the written data \
-             ignoring case"
+            "on_conflict column '{column}' matches more than one column of the table ignoring \
+             case"
         ))),
     }
 }
@@ -225,6 +245,7 @@ const NANOSECONDS_PER_MICROSECOND: i64 = 1_000;
 fn canonical_type(data_type: &DataType) -> DataType {
     match data_type {
         DataType::Dictionary(_, value) => canonical_type(value),
+        DataType::RunEndEncoded(_, value) => canonical_type(value.data_type()),
         DataType::Date64 => DataType::Date32,
         DataType::Time64(TimeUnit::Nanosecond) => DataType::Time64(TimeUnit::Microsecond),
         DataType::Timestamp(TimeUnit::Nanosecond, Some(_)) => {
@@ -240,7 +261,7 @@ fn canonical_type(data_type: &DataType) -> DataType {
 ///
 /// `DuckDB` keys `-0.0` as a repeat of `0.0` and every NaN as one key, while
 /// their bits, and arrow's row format, tell them apart. It stores a dictionary
-/// column as its values; a `Date64` as a `DATE`, a nanosecond `Time64` as a
+/// or run-end-encoded column as its values; a `Date64` as a `DATE`, a nanosecond `Time64` as a
 /// microsecond `TIME`, and a nanosecond timestamp with a time zone as a
 /// microsecond `TIMESTAMP WITH TIME ZONE`, each truncated toward zero, as the
 /// `/` here does (a nanosecond timestamp without a time zone is a
@@ -250,6 +271,9 @@ fn canonical_type(data_type: &DataType) -> DataType {
 fn canonical_key_column(column: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     Ok(match column.data_type() {
         DataType::Dictionary(_, value) => canonical_key_column(&cast(column, value)?)?,
+        DataType::RunEndEncoded(_, value) => {
+            canonical_key_column(&cast(column, value.data_type())?)?
+        }
         DataType::Float32 => Arc::new(
             column
                 .as_primitive::<Float32Type>()
@@ -341,8 +365,8 @@ impl RecordBatchReader for StatementReader {
 mod tests {
     use super::*;
     use arrow::array::{
-        Date64Array, DictionaryArray, Float32Array, Float64Array, Int64Array, StringArray,
-        Time64NanosecondArray, TimestampNanosecondArray,
+        Date64Array, DictionaryArray, Float32Array, Float64Array, Int32Array, Int64Array, RunArray,
+        StringArray, Time64NanosecondArray, TimestampNanosecondArray,
     };
     use arrow::datatypes::{Field, Int32Type, Int64Type};
     use tokio::sync::mpsc;
@@ -418,17 +442,23 @@ mod tests {
         let schema = batches.first().map_or_else(schema, RecordBatch::schema);
         let expected_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
         let mut statements = Vec::new();
-        let rows = write_statements(source(batches), &schema, keys.iter().copied(), |reader| {
-            let mut statement = Vec::new();
-            let mut rows = 0;
-            for batch in reader {
-                let batch = batch?;
-                rows += batch.num_rows() as u64;
-                statement.push(f(&batch));
-            }
-            statements.push(statement);
-            Ok::<u64, ArrowError>(rows)
-        })
+        let rows = write_statements(
+            source(batches),
+            &schema,
+            &schema,
+            keys.iter().copied(),
+            |reader| {
+                let mut statement = Vec::new();
+                let mut rows = 0;
+                for batch in reader {
+                    let batch = batch?;
+                    rows += batch.num_rows() as u64;
+                    statement.push(f(&batch));
+                }
+                statements.push(statement);
+                Ok::<u64, ArrowError>(rows)
+            },
+        )
         .expect("write");
         assert_eq!(
             rows, expected_rows as u64,
@@ -590,7 +620,7 @@ mod tests {
             (Some(1), "e"),
         ])];
         let groups = Arc::new(Mutex::new(
-            UpsertGroups::try_new(source(batches), &schema(), ["id"])
+            UpsertGroups::try_new(source(batches), &schema(), &schema(), ["id"])
                 .expect("groups")
                 .with_max_keys(2),
         ));
@@ -689,12 +719,12 @@ mod tests {
 
     #[test]
     fn a_conflict_target_that_names_no_column_is_an_error() {
-        let err = UpsertGroups::try_new(source(vec![]), &schema(), ["nope"])
+        let err = UpsertGroups::try_new(source(vec![]), &schema(), &schema(), ["nope"])
             .err()
             .expect("an error");
         assert_eq!(
             err.to_string(),
-            "Schema error: on_conflict column 'nope' is not a column of the written data"
+            "Schema error: on_conflict column 'nope' is not a column of the table"
         );
     }
 
@@ -704,13 +734,13 @@ mod tests {
             Field::new("Id", DataType::Int64, false),
             Field::new("ID", DataType::Int64, false),
         ]);
-        let err = UpsertGroups::try_new(source(vec![]), &schema, ["id"])
+        let err = UpsertGroups::try_new(source(vec![]), &schema, &schema, ["id"])
             .err()
             .expect("an error");
         assert_eq!(
             err.to_string(),
-            "Schema error: on_conflict column 'id' matches more than one column of the written \
-             data ignoring case"
+            "Schema error: on_conflict column 'id' matches more than one column of the table \
+             ignoring case"
         );
     }
 
@@ -719,7 +749,7 @@ mod tests {
         let batches = vec![batch(&[(Some(1), "a")]), batch(&[(Some(1), "b")])];
         let schema = batches[0].schema();
         let mut statements = 0;
-        let err = write_statements(source(batches), &schema, ["id"], |reader| {
+        let err = write_statements(source(batches), &schema, &schema, ["id"], |reader| {
             statements += 1;
             let rows = reader.count() as u64;
             if statements == 2 {
@@ -822,5 +852,92 @@ mod tests {
             &["id"],
         );
         assert_eq!(sizes, vec![2, 1]);
+    }
+
+    #[test]
+    fn the_conflict_target_is_read_from_the_written_data_by_the_tables_position() {
+        // The table is (id, v); the written data names its columns (k, id) and its
+        // `id` is NOT the key: the key is column 0, which the table calls `id`.
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+        ]);
+        let written = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("id", DataType::Utf8, true),
+        ]));
+        let batch = |k: Vec<i64>, id: Vec<&str>| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(Int64Array::from(k)),
+                    Arc::new(StringArray::from(id)),
+                ],
+            )
+            .expect("batch")
+        };
+        let mut sizes = Vec::new();
+        write_statements(
+            source(vec![
+                batch(vec![1, 2], vec!["x", "x"]),
+                batch(vec![1], vec!["y"]),
+            ]),
+            &written,
+            &table_schema,
+            ["id"],
+            |reader| {
+                let rows: u64 = reader.map(|b| b.expect("batch").num_rows() as u64).sum();
+                sizes.push(rows);
+                Ok::<u64, ArrowError>(rows)
+            },
+        )
+        .expect("write");
+        assert_eq!(
+            sizes,
+            vec![2, 1],
+            "column 0 repeats 1, so the second batch starts a statement; the written \
+             column named id (x, x, y) does not decide it"
+        );
+    }
+
+    #[test]
+    fn written_data_with_fewer_columns_than_the_tables_key_position_is_an_error() {
+        let table_schema = Schema::new(vec![
+            Field::new("v", DataType::Utf8, true),
+            Field::new("id", DataType::Int64, false),
+        ]);
+        let written = Schema::new(vec![Field::new("v", DataType::Utf8, true)]);
+        let err = UpsertGroups::try_new(source(vec![]), &written, &table_schema, ["id"])
+            .err()
+            .expect("an error");
+        assert_eq!(
+            err.to_string(),
+            "Schema error: on_conflict column 'id' is column 2 of the table, but the written \
+             data has only 1 columns"
+        );
+    }
+
+    #[test]
+    fn a_run_end_encoded_key_repeats_by_its_decoded_value() {
+        let encoded = |run_ends: Vec<i32>, values: Vec<i64>| {
+            let values: ArrayRef = Arc::new(Time64NanosecondArray::from(values));
+            Arc::new(
+                RunArray::<Int32Type>::try_new(&Int32Array::from(run_ends), &values)
+                    .expect("run array"),
+            ) as ArrayRef
+        };
+        // (1_000, 1_000, 2_000) then (1_999): 1_999 ns is the microsecond 1_000 ns holds.
+        let sizes = statement_sizes(
+            vec![
+                keyed(encoded(vec![2, 3], vec![1_000, 2_000])),
+                keyed(encoded(vec![1], vec![1_999])),
+            ],
+            &["id"],
+        );
+        assert_eq!(
+            sizes,
+            vec![1, 2, 1],
+            "the second 1_000 is a repeat and starts a statement, which 2_000 joins; 1_999 ns is              the microsecond 1_000 ns holds and starts the third"
+        );
     }
 }
