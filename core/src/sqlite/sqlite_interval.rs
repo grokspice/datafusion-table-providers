@@ -107,6 +107,20 @@ pub fn mark_date_operands(plan: LogicalPlan) -> Result<LogicalPlan, DataFusionEr
             schema.merge(input.schema());
         }
         if node.inputs().is_empty() {
+            // A scan's pushed-down filters read the table, not the projection: a column
+            // the projection drops is still a column the filter can name, and its type
+            // is only in the source schema. Resolving a filter against the projected
+            // schema alone leaves such an operand unmarked, and an unmarked operand
+            // shifts through `datetime()` — which, on a `DATE` column SQLite stores as
+            // date-only text, renders a value no `DATE` literal compares equal to.
+            if let LogicalPlan::TableScan(scan) = &node {
+                if let Ok(source) = DFSchema::try_from_qualified_schema(
+                    scan.table_name.clone(),
+                    &scan.source.schema(),
+                ) {
+                    schema.merge(&source);
+                }
+            }
             schema.merge(node.schema());
         }
         let name_preserver = NamePreserver::new(&node);
@@ -732,6 +746,45 @@ mod test {
                 "CAST(t.d AS Timestamp(µs)) + <interval> AS cast_plus",
                 "sqlite_date_operand(sqlite_date_operand(t.d) + <interval>) - <interval> AS chain",
             ]
+        );
+    }
+
+    /// A scan's pushed-down filter is resolved against the table, not the projection.
+    ///
+    /// `SELECT id FROM t WHERE d + INTERVAL '1 day' = DATE '...'` pushes the filter into
+    /// the scan and projects `id` alone, so `d` is absent from the scan's own schema.
+    /// Resolved against that schema the operand's type is unknown, the marker is skipped,
+    /// and the unparser renders the shift through `datetime()` — which on a `DATE` column
+    /// SQLite stores as date-only text yields `'2026-10-04 00:00:00'`, equal to no `DATE`
+    /// literal, so the matching rows are dropped.
+    #[test]
+    fn a_scan_filter_marks_a_date_column_its_projection_drops() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("d", DataType::Date32, true),
+        ]));
+        let one_day = || lit(ScalarValue::new_interval_mdn(0, 1, 0));
+        let plan = LogicalPlanBuilder::scan_with_filters(
+            "t",
+            Arc::new(LogicalTableSource::new(schema)),
+            Some(vec![0]),
+            vec![(col("d") + one_day()).eq(lit(ScalarValue::Date32(Some(20000))))],
+        )
+        .expect("scan")
+        .build()
+        .expect("plan");
+
+        let marked = mark_date_operands(plan).expect("marked");
+        let interval = one_day().to_string();
+        let rendered: Vec<String> = marked
+            .expressions()
+            .iter()
+            .map(|expr| expr.to_string().replace(&interval, "<interval>"))
+            .collect();
+        assert_eq!(
+            rendered,
+            ["sqlite_date_operand(d) + <interval> = Date32(\"2024-10-04\")"],
+            "a filtered DATE column the projection drops must still be marked"
         );
     }
 
