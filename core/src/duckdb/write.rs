@@ -1,4 +1,3 @@
-use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, sync::Arc};
 
@@ -41,7 +40,7 @@ use tokio::task::JoinHandle;
 
 use super::creator::{TableDefinition, TableManager, ViewCreator};
 use super::file_swap;
-use super::upsert_groups::{StatementReader, UpsertGroups};
+use super::upsert_groups;
 use super::write_settings::DuckDBWriteSettings;
 use super::{to_datafusion_error, RelationName};
 use crate::sql::db_connection_pool::Mode;
@@ -979,8 +978,6 @@ fn checkpoint_after_write(duckdb_conn: &mut DuckDbConnection, table_name: &Relat
     );
 }
 
-#[allow(clippy::doc_markdown)]
-/// Writes a stream of ``RecordBatch``es to a DuckDB table.
 /// Writes every batch of `data_batches` into `table` on `tx`.
 ///
 /// An upsert (`ON CONFLICT … DO UPDATE`) is written as one `INSERT` statement
@@ -994,25 +991,9 @@ pub(super) fn write_to_table(
     on_conflict: Option<&OnConflict>,
 ) -> datafusion::common::Result<u64> {
     if let Some(OnConflict::Upsert(target)) = on_conflict {
-        let groups = UpsertGroups::try_new(data_batches, &schema, target.iter())
-            .map_err(|source| DataFusionError::ArrowError(Box::new(source), None))?;
-        let groups = Arc::new(Mutex::new(groups));
-        let mut rows = 0;
-        loop {
-            groups
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .start_statement();
-            let reader = StatementReader::new(Arc::clone(&groups), Arc::clone(&schema));
-            rows += insert_from_reader(table, tx, Box::new(reader), on_conflict)?;
-            if groups
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_exhausted()
-            {
-                return Ok(rows);
-            }
-        }
+        return upsert_groups::write_statements(data_batches, &schema, target.iter(), |reader| {
+            insert_from_reader(table, tx, reader, on_conflict)
+        });
     }
     insert_from_reader(
         table,
@@ -2372,8 +2353,6 @@ mod test {
         );
     }
 
-    // --- on_conflict: upsert keeps the last copy of a key a write repeats (spiceai/spiceai#14643) ---
-
     fn upsert_schema() -> SchemaRef {
         Arc::new(arrow::datatypes::Schema::new(vec![
             arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, false),
@@ -2423,8 +2402,8 @@ mod test {
             .expect("to set threads");
     }
 
-    /// The row count, and the `name` of key `id`, of `table`.
-    fn count_and_name(tx: &Transaction<'_>, table: &str, id: i64) -> (i64, Option<String>) {
+    /// The row count of `table`, and the `name` of the rows `key` selects.
+    fn count_and_name(tx: &Transaction<'_>, table: &str, key: &str) -> (i64, Option<String>) {
         let count = tx
             .query_row(&format!("SELECT COUNT(1) FROM {table}"), [], |row| {
                 row.get::<_, i64>(0)
@@ -2432,7 +2411,7 @@ mod test {
             .expect("to count rows");
         let name = tx
             .query_row(
-                &format!("SELECT string_agg(name, ',') FROM {table} WHERE id = {id}"),
+                &format!("SELECT string_agg(name, ',') FROM {table} WHERE {key}"),
                 [],
                 |row| row.get::<_, Option<String>>(0),
             )
@@ -2484,7 +2463,7 @@ mod test {
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         assert_eq!(
-            count_and_name(&tx, &table_definition.name().to_string(), 0),
+            count_and_name(&tx, &table_definition.name().to_string(), "id = 0"),
             (8192, Some("last".to_string()))
         );
     }
@@ -2526,12 +2505,18 @@ mod test {
 
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let name = table.table_name().to_string();
-        assert_eq!(count_and_name(&tx, &name, 0), (3, Some("last".to_string())));
         assert_eq!(
-            count_and_name(&tx, &name, 1),
+            count_and_name(&tx, &name, "id = 0"),
+            (3, Some("last".to_string()))
+        );
+        assert_eq!(
+            count_and_name(&tx, &name, "id = 1"),
             (3, Some("stored".to_string()))
         );
-        assert_eq!(count_and_name(&tx, &name, 2), (3, Some("last".to_string())));
+        assert_eq!(
+            count_and_name(&tx, &name, "id = 2"),
+            (3, Some("last".to_string()))
+        );
     }
 
     /// With the database's default thread count, which copy a single statement
@@ -2559,7 +2544,7 @@ mod test {
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         assert_eq!(
-            count_and_name(&tx, &table_definition.name().to_string(), 0),
+            count_and_name(&tx, &table_definition.name().to_string(), "id = 0"),
             (51, Some("copy 49".to_string()))
         );
     }
@@ -2575,11 +2560,7 @@ mod test {
     ) -> (i64, Option<String>) {
         let pool = get_mem_duckdb();
         single_threaded(&pool);
-        let table_definition = Arc::new(
-            TableDefinition::new(RelationName::new(name), Arc::clone(schema)).with_constraints(
-                crate::util::constraints::tests::get_pk_constraints(&["id"], Arc::clone(schema)),
-            ),
-        );
+        let table_definition = upsert_table_definition(name, schema);
         let mut conn = pool.connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
@@ -2605,20 +2586,7 @@ mod test {
         )
         .expect("to write");
 
-        let table_name = table.table_name().to_string();
-        let count = tx
-            .query_row(&format!("SELECT COUNT(1) FROM {table_name}"), [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("to count rows");
-        let name = tx
-            .query_row(
-                &format!("SELECT string_agg(name, ',') FROM {table_name} WHERE {key}"),
-                [],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .expect("to read the key");
-        (count, name)
+        count_and_name(&tx, &table.table_name().to_string(), key)
     }
 
     /// A key repeated inside one record batch keeps its last copy too.
