@@ -538,128 +538,43 @@ fn parse_timezone_offset_seconds(tz: &str) -> Option<i32> {
     Some(sign * (hours * 3600 + minutes * 60))
 }
 
-/// Serialize a list array element at a given row index to a JSON string.
-/// This ensures proper JSON encoding (e.g., strings are quoted).
-fn serialize_list_to_json(
-    column: &arrow::array::ArrayRef,
-    row_idx: usize,
-    element_type: &arrow::datatypes::DataType,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync + 'static>> {
-    use arrow::array::*;
+/// The nested types written as JSON text through Arrow's JSON encoder, which its JSON reader
+/// decodes back. `CreateTableBuilder::build_sqlite` gives every nested type a JSON column;
+/// `Union`, `Dictionary` and `RunEndEncoded` columns are still written as Arrow's display text.
+fn stores_as_json(data_type: &arrow::datatypes::DataType) -> bool {
     use arrow::datatypes::DataType;
+    matches!(
+        data_type,
+        DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_)
+            | DataType::Struct(_)
+            | DataType::Map(_, _)
+    )
+}
 
-    // Get the list value for this row
-    let list_array: Arc<dyn Array> = match column.data_type() {
-        DataType::List(_) => {
-            let arr = column.as_any().downcast_ref::<ListArray>().unwrap();
-            arr.value(row_idx)
-        }
-        DataType::LargeList(_) => {
-            let arr = column.as_any().downcast_ref::<LargeListArray>().unwrap();
-            arr.value(row_idx)
-        }
-        DataType::FixedSizeList(_, _) => {
-            let arr = column
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .unwrap();
-            arr.value(row_idx)
-        }
-        _ => return Err("Unsupported list type".into()),
-    };
-
-    // Serialize the list elements to JSON based on element type
-    let json_str = match element_type {
-        DataType::Int8 => {
-            let arr = list_array.as_any().downcast_ref::<Int8Array>().unwrap();
-            let values: Vec<i8> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Int16 => {
-            let arr = list_array.as_any().downcast_ref::<Int16Array>().unwrap();
-            let values: Vec<i16> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Int32 => {
-            let arr = list_array.as_any().downcast_ref::<Int32Array>().unwrap();
-            let values: Vec<i32> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Int64 => {
-            let arr = list_array.as_any().downcast_ref::<Int64Array>().unwrap();
-            let values: Vec<i64> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::UInt8 => {
-            let arr = list_array.as_any().downcast_ref::<UInt8Array>().unwrap();
-            let values: Vec<u8> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::UInt16 => {
-            let arr = list_array.as_any().downcast_ref::<UInt16Array>().unwrap();
-            let values: Vec<u16> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::UInt32 => {
-            let arr = list_array.as_any().downcast_ref::<UInt32Array>().unwrap();
-            let values: Vec<u32> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::UInt64 => {
-            let arr = list_array.as_any().downcast_ref::<UInt64Array>().unwrap();
-            let values: Vec<u64> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Float32 => {
-            let arr = list_array.as_any().downcast_ref::<Float32Array>().unwrap();
-            let values: Vec<f32> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Float64 => {
-            let arr = list_array.as_any().downcast_ref::<Float64Array>().unwrap();
-            let values: Vec<f64> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Utf8 => {
-            let arr = list_array.as_any().downcast_ref::<StringArray>().unwrap();
-            let values: Vec<String> = (0..arr.len()).map(|i| arr.value(i).to_string()).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::LargeUtf8 => {
-            let arr = list_array
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .unwrap();
-            let values: Vec<String> = (0..arr.len()).map(|i| arr.value(i).to_string()).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Utf8View => {
-            let arr = list_array
-                .as_any()
-                .downcast_ref::<StringViewArray>()
-                .unwrap();
-            let values: Vec<String> = (0..arr.len()).map(|i| arr.value(i).to_string()).collect();
-            serde_json::to_string(&values)?
-        }
-        DataType::Boolean => {
-            let arr = list_array.as_any().downcast_ref::<BooleanArray>().unwrap();
-            let values: Vec<bool> = (0..arr.len()).map(|i| arr.value(i)).collect();
-            serde_json::to_string(&values)?
-        }
-        _ => {
-            // Fallback to ArrayFormatter for unsupported types
-            use arrow::util::display::{ArrayFormatter, FormatOptions};
-            let formatter =
-                ArrayFormatter::try_new(list_array.as_ref(), &FormatOptions::default())?;
-            let mut values = Vec::new();
-            for i in 0..list_array.len() {
-                values.push(formatter.value(i).to_string());
+/// One JSON encoder per column of `batch` that `stores_as_json`, built once per batch so a row
+/// is encoded with `NullableEncoder::encode` and no per-row allocation beyond its text.
+fn nested_json_encoders<'a>(
+    batch: &'a RecordBatch,
+    options: &'a arrow::json::writer::EncoderOptions,
+) -> rusqlite::Result<Vec<Option<arrow::json::writer::NullableEncoder<'a>>>> {
+    batch
+        .schema_ref()
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .map(|(field, column)| {
+            if !stores_as_json(field.data_type()) {
+                return Ok(None);
             }
-            serde_json::to_string(&values)?
-        }
-    };
-
-    Ok(json_str)
+            arrow::json::writer::make_encoder(field, column.as_ref(), options)
+                .map(Some)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -901,6 +816,10 @@ impl Sqlite {
 
         // Prepare the statement once
         let mut stmt = transaction.prepare_cached(&sql)?;
+
+        let json_options = arrow::json::writer::EncoderOptions::default().with_explicit_nulls(true);
+        let mut nested_encoders = nested_json_encoders(&batch, &json_options)?;
+        let mut json_buf = Vec::new();
 
         // Execute for each row
         for row_idx in 0..batch.num_rows() {
@@ -1304,34 +1223,38 @@ impl Sqlite {
                             params.push(Box::new(decimal.to_string()));
                         }
                     }
-                    DataType::List(field_ref) | DataType::LargeList(field_ref) => {
-                        if column.is_null(row_idx) {
-                            params.push(Box::new(rusqlite::types::Null));
-                        } else {
-                            let json_str =
-                                serialize_list_to_json(column, row_idx, field_ref.data_type())
-                                    .map_err(rusqlite::Error::ToSqlConversionFailure)?;
-                            params.push(Box::new(json_str));
-                        }
-                    }
-                    DataType::FixedSizeList(field_ref, _) => {
-                        if column.is_null(row_idx) {
-                            params.push(Box::new(rusqlite::types::Null));
-                        } else {
-                            let json_str =
-                                serialize_list_to_json(column, row_idx, field_ref.data_type())
-                                    .map_err(rusqlite::Error::ToSqlConversionFailure)?;
-                            params.push(Box::new(json_str));
-                        }
-                    }
-                    DataType::ListView(_)
+                    DataType::List(_)
+                    | DataType::LargeList(_)
+                    | DataType::FixedSizeList(_, _)
+                    | DataType::ListView(_)
                     | DataType::LargeListView(_)
                     | DataType::Struct(_)
-                    | DataType::Map(_, _)
-                    | DataType::Union(_, _)
+                    | DataType::Map(_, _) => {
+                        // Stored as the JSON text Arrow's encoder writes for the row, whatever the
+                        // nesting and leaf types, so the JSON reader decodes the same value back.
+                        let Some(encoder) =
+                            nested_encoders.get_mut(col_idx).and_then(Option::as_mut)
+                        else {
+                            let message =
+                                format!("no JSON encoder for column {col_idx} of type {data_type}");
+                            return Err(rusqlite::Error::ToSqlConversionFailure(message.into()));
+                        };
+                        if encoder.is_null(row_idx) {
+                            params.push(Box::new(rusqlite::types::Null));
+                        } else {
+                            // `json_buf` keeps its capacity across rows; the parameter takes an
+                            // exact-size copy of this row's text.
+                            json_buf.clear();
+                            encoder.encode(row_idx, &mut json_buf);
+                            let json = std::str::from_utf8(&json_buf).map_err(|e| {
+                                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+                            })?;
+                            params.push(Box::new(json.to_owned()));
+                        }
+                    }
+                    DataType::Union(_, _)
                     | DataType::Dictionary(_, _)
                     | DataType::RunEndEncoded(_, _) => {
-                        // For complex nested types, use JSON serialization via ArrayFormatter
                         use arrow::util::display::{ArrayFormatter, FormatOptions};
                         let formatter =
                             ArrayFormatter::try_new(column.as_ref(), &FormatOptions::default())

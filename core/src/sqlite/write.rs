@@ -1212,4 +1212,676 @@ mod tests {
             assert_eq!(name, "all");
         }
     }
+
+    /// Nested columns are stored as JSON text and must come back as the Arrow values
+    /// written, through both insert paths. Regression tests for spiceai/spiceai#3551: a list
+    /// of structs (the `comments` column of a GitHub issues dataset), a list with a null
+    /// item, a list of lists, a list of dates, a fixed-size list, a large list and a struct.
+    #[cfg(feature = "federation")]
+    mod nested_columns {
+        use std::{collections::HashMap, sync::Arc};
+
+        use datafusion::arrow::{
+            array::{
+                ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date32Builder,
+                Date64Array, Decimal128Array, Decimal256Array, FixedSizeBinaryArray,
+                FixedSizeListBuilder, Float32Array, Float64Array, Int16Array, Int32Array,
+                Int32Builder, Int64Array, Int8Array, LargeBinaryArray, LargeListBuilder,
+                LargeStringArray, ListArray, ListBuilder, RecordBatch, StringArray, StringBuilder,
+                StringViewArray, StructArray, StructBuilder, Time32MillisecondArray,
+                Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
+                TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+                TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+            },
+            buffer::{NullBuffer, OffsetBuffer},
+            datatypes::{i256, DataType, Field, Fields, Schema, SchemaRef, TimeUnit},
+        };
+        use datafusion::{
+            catalog::TableProviderFactory,
+            common::{Constraints, TableReference, ToDFSchema},
+            execution::context::SessionContext,
+            logical_expr::{dml::InsertOp, CreateExternalTable},
+            physical_plan::collect,
+        };
+        use datafusion_federation::schema_cast::record_convert::try_cast_to;
+
+        use crate::sqlite::SqliteTableProviderFactory;
+        use crate::util::test::MockExec;
+
+        fn comment_fields() -> Fields {
+            Fields::from(vec![
+                Field::new(
+                    "author",
+                    DataType::Struct(Fields::from(vec![Field::new(
+                        "login",
+                        DataType::Utf8,
+                        true,
+                    )])),
+                    true,
+                ),
+                Field::new("body", DataType::Utf8, true),
+            ])
+        }
+
+        fn comment_builder() -> StructBuilder {
+            StructBuilder::new(
+                comment_fields(),
+                vec![
+                    Box::new(StructBuilder::new(
+                        Fields::from(vec![Field::new("login", DataType::Utf8, true)]),
+                        vec![Box::new(StringBuilder::new())],
+                    )),
+                    Box::new(StringBuilder::new()),
+                ],
+            )
+        }
+
+        fn push_comment(item: &mut StructBuilder, login: &str, body: Option<&str>) {
+            let author = item.field_builder::<StructBuilder>(0).expect("author");
+            author
+                .field_builder::<StringBuilder>(0)
+                .expect("login")
+                .append_value(login);
+            author.append(true);
+            item.field_builder::<StringBuilder>(1)
+                .expect("body")
+                .append_option(body);
+            item.append(true);
+        }
+
+        /// Four issues: two comments (one with a null body), no comments, a null comment
+        /// list, and one comment whose body needs JSON escaping.
+        fn comments_column() -> ArrayRef {
+            let mut list = ListBuilder::new(comment_builder());
+            push_comment(list.values(), "alice", Some("hello"));
+            push_comment(list.values(), "bob", None);
+            list.append(true);
+            list.append(true);
+            list.append_null();
+            push_comment(
+                list.values(),
+                "carol",
+                Some("a \"quoted\" body, with ünïcödé and a \\ backslash"),
+            );
+            list.append(true);
+            Arc::new(list.finish())
+        }
+
+        fn large_comments_column() -> ArrayRef {
+            let mut list = LargeListBuilder::new(comment_builder());
+            push_comment(list.values(), "alice", Some("hello"));
+            list.append(true);
+            list.append_null();
+            list.append(true);
+            push_comment(list.values(), "dave", None);
+            list.append(true);
+            Arc::new(list.finish())
+        }
+
+        fn nested_issues_batch() -> (RecordBatch, SchemaRef) {
+            let mut tags = ListBuilder::new(StringBuilder::new());
+            tags.append_value([Some("bug"), None, Some("sqlite")]);
+            tags.append_value(Vec::<Option<&str>>::new());
+            tags.append_null();
+            tags.append_value([Some("accelerator")]);
+
+            let mut matrix = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
+            matrix.values().append_value([Some(1), Some(2)]);
+            matrix.values().append(true);
+            matrix.values().append_null();
+            matrix.append(true);
+            matrix.append(true);
+            matrix.append_null();
+            matrix.values().append_value([Some(3), None]);
+            matrix.append(true);
+
+            let mut dates = ListBuilder::new(Date32Builder::new());
+            dates.append_value([Some(0), Some(19_723), None]);
+            dates.append_value(Vec::<Option<i32>>::new());
+            dates.append_null();
+            dates.append_value([Some(1)]);
+
+            let mut pairs = FixedSizeListBuilder::new(Int32Builder::new(), 2);
+            pairs.values().append_value(1);
+            pairs.values().append_value(2);
+            pairs.append(true);
+            pairs.values().append_null();
+            pairs.values().append_value(4);
+            pairs.append(true);
+            pairs.values().append_null();
+            pairs.values().append_null();
+            pairs.append(false);
+            pairs.values().append_value(7);
+            pairs.values().append_value(8);
+            pairs.append(true);
+
+            let meta_fields = Fields::from(vec![
+                Field::new("n", DataType::Int32, true),
+                Field::new("label", DataType::Utf8, true),
+            ]);
+            let mut meta = StructBuilder::new(
+                meta_fields.clone(),
+                vec![
+                    Box::new(Int32Builder::new()),
+                    Box::new(StringBuilder::new()),
+                ],
+            );
+            for (n, label, valid) in [
+                (Some(1), Some("x"), true),
+                (None, Some("y"), true),
+                (None, None, false),
+                (Some(4), None, true),
+            ] {
+                meta.field_builder::<Int32Builder>(0)
+                    .expect("n")
+                    .append_option(n);
+                meta.field_builder::<StringBuilder>(1)
+                    .expect("label")
+                    .append_option(label);
+                meta.append(valid);
+            }
+
+            let comments = comments_column();
+            let large_comments = large_comments_column();
+            let tags: ArrayRef = Arc::new(tags.finish());
+            let matrix: ArrayRef = Arc::new(matrix.finish());
+            let dates: ArrayRef = Arc::new(dates.finish());
+            let pairs: ArrayRef = Arc::new(pairs.finish());
+            let meta: ArrayRef = Arc::new(meta.finish());
+
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("comments", comments.data_type().clone(), true),
+                Field::new("large_comments", large_comments.data_type().clone(), true),
+                Field::new("tags", tags.data_type().clone(), true),
+                Field::new("matrix", matrix.data_type().clone(), true),
+                Field::new("dates", dates.data_type().clone(), true),
+                Field::new("pairs", pairs.data_type().clone(), true),
+                Field::new("meta", DataType::Struct(meta_fields), true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                    comments,
+                    large_comments,
+                    tags,
+                    matrix,
+                    dates,
+                    pairs,
+                    meta,
+                ],
+            )
+            .expect("nested issues batch");
+            (batch, schema)
+        }
+
+        fn external_table(table_name: &str, schema: &SchemaRef) -> CreateExternalTable {
+            CreateExternalTable {
+                schema: ToDFSchema::to_dfschema_ref(Arc::clone(schema)).expect("df schema"),
+                name: TableReference::bare(table_name),
+                locations: vec![],
+                file_type: String::new(),
+                table_partition_cols: vec![],
+                if_not_exists: true,
+                definition: None,
+                order_exprs: vec![],
+                unbounded: false,
+                options: HashMap::new(),
+                constraints: Constraints::new_unverified(vec![]),
+                column_defaults: HashMap::default(),
+                temporary: false,
+                or_replace: false,
+            }
+        }
+
+        /// Creates `table_name` with `batch`'s schema, inserts `batch` through the given insert
+        /// path, and returns `SELECT * ... ORDER BY id` as SQLite stores it, before any cast
+        /// back to the nested types.
+        async fn insert_and_read_back(
+            table_name: &str,
+            use_prepared_statements: bool,
+            batch: &RecordBatch,
+        ) -> Vec<RecordBatch> {
+            let ctx = SessionContext::new();
+            let schema = batch.schema();
+
+            let table = SqliteTableProviderFactory::default()
+                .with_batch_insert_use_prepared_statements(use_prepared_statements)
+                .create(&ctx.state(), &external_table(table_name, &schema))
+                .await
+                .expect("a table with nested columns should be created");
+
+            let exec = MockExec::new(vec![Ok(batch.clone())], Arc::clone(&schema));
+            let insertion = table
+                .insert_into(&ctx.state(), Arc::new(exec), InsertOp::Append)
+                .await
+                .expect("insertion should be planned");
+            collect(insertion, ctx.task_ctx())
+                .await
+                .expect("insert should complete");
+
+            ctx.register_table(table_name, Arc::clone(&table))
+                .expect("table should be registered");
+            ctx.sql(&format!("SELECT * FROM {table_name} ORDER BY id"))
+                .await
+                .expect("query should plan")
+                .collect()
+                .await
+                .expect("should collect results")
+        }
+
+        /// The accelerator accepts the schema at create time (a list item type it does not
+        /// support fails create with `The field 'comments' has an unsupported data type`), and
+        /// every row, item and null survives the round trip through the given insert path.
+        async fn round_trip(use_prepared_statements: bool, table_name: &str) {
+            let (record_batch, schema) = nested_issues_batch();
+            let result_batches =
+                insert_and_read_back(table_name, use_prepared_statements, &record_batch).await;
+            assert_eq!(result_batches.len(), 1, "one result batch");
+            let result = &result_batches[0];
+
+            // The nested columns reach the reader as the JSON text SQLite stored, so a cast
+            // from a string to the nested type is exercised rather than a pass-through.
+            assert_eq!(
+                result
+                    .schema()
+                    .field_with_name("comments")
+                    .expect("comments")
+                    .data_type(),
+                &DataType::Utf8,
+                "the raw SQLite read returns the JSON text"
+            );
+            let casted = try_cast_to(result.clone(), Arc::clone(&schema))
+                .expect("the JSON text should decode back into every nested column");
+            assert_eq!(
+                casted, record_batch,
+                "round-tripped data should match the original"
+            );
+        }
+
+        /// A null item inside a list of strings is stored as the JSON `null`, not as its
+        /// type's zero value (an empty string).
+        #[tokio::test]
+        async fn a_null_item_in_a_list_of_strings_reads_back_null() {
+            let mut tags = ListBuilder::new(StringBuilder::new());
+            tags.append_value([Some("bug"), None, Some("sqlite")]);
+            tags.append_value([None::<&str>]);
+            let tags: ArrayRef = Arc::new(tags.finish());
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("tags", tags.data_type().clone(), true),
+            ]));
+            let record_batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(vec![1, 2])), tags],
+            )
+            .expect("batch");
+
+            let result = insert_and_read_back("null_tags", true, &record_batch).await;
+            let stored = result[0]
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("the raw SQLite read returns the JSON text");
+            assert_eq!(stored.value(0), r#"["bug",null,"sqlite"]"#);
+            assert_eq!(stored.value(1), "[null]");
+            let casted = try_cast_to(result[0].clone(), Arc::clone(&schema)).expect("cast");
+            assert_eq!(casted, record_batch, "a null item reads back as null");
+        }
+
+        /// One struct column holding every scalar the SQLite type check admits inside a nested
+        /// column, and a list of that struct: row 0 carries a value in every field, row 1 a
+        /// null in every field, row 2 is a null struct; the list holds rows 0-1, a null list,
+        /// and row 2.
+        fn leaf_types_batch() -> (RecordBatch, SchemaRef) {
+            let children: Vec<(&str, ArrayRef)> = vec![
+                ("i8", Arc::new(Int8Array::from(vec![Some(-1), None, None]))),
+                (
+                    "i16",
+                    Arc::new(Int16Array::from(vec![Some(-300), None, None])),
+                ),
+                (
+                    "i32",
+                    Arc::new(Int32Array::from(vec![Some(i32::MIN), None, None])),
+                ),
+                (
+                    "i64",
+                    Arc::new(Int64Array::from(vec![Some(i64::MAX), None, None])),
+                ),
+                (
+                    "u8",
+                    Arc::new(UInt8Array::from(vec![Some(255), None, None])),
+                ),
+                (
+                    "u16",
+                    Arc::new(UInt16Array::from(vec![Some(65_535), None, None])),
+                ),
+                (
+                    "u32",
+                    Arc::new(UInt32Array::from(vec![Some(u32::MAX), None, None])),
+                ),
+                (
+                    "u64",
+                    Arc::new(UInt64Array::from(vec![Some(u64::MAX), None, None])),
+                ),
+                (
+                    "f32",
+                    Arc::new(Float32Array::from(vec![Some(-0.25), None, None])),
+                ),
+                (
+                    "f64",
+                    Arc::new(Float64Array::from(vec![Some(1.0e300), None, None])),
+                ),
+                (
+                    "utf8",
+                    Arc::new(StringArray::from(vec![
+                        Some("a \"q\" \\ \u{1F600}"),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "large_utf8",
+                    Arc::new(LargeStringArray::from(vec![Some(""), None, None])),
+                ),
+                (
+                    "utf8_view",
+                    Arc::new(StringViewArray::from(vec![
+                        Some("a view longer than twelve bytes"),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "bool",
+                    Arc::new(BooleanArray::from(vec![Some(false), None, None])),
+                ),
+                (
+                    "binary",
+                    Arc::new(BinaryArray::from(vec![
+                        Some(b"\x00\xff".as_slice()),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "large_binary",
+                    Arc::new(LargeBinaryArray::from(vec![
+                        Some(b"".as_slice()),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "binary_view",
+                    Arc::new(BinaryViewArray::from(vec![
+                        Some(b"a binary view longer than twelve".as_slice()),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "fixed_binary",
+                    Arc::new(
+                        FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                            vec![Some([1u8, 2]), None, None].into_iter(),
+                            2,
+                        )
+                        .expect("fixed-size binary"),
+                    ),
+                ),
+                (
+                    "date32",
+                    Arc::new(Date32Array::from(vec![Some(19_723), None, None])),
+                ),
+                (
+                    "date64",
+                    Arc::new(Date64Array::from(vec![Some(1_700_000_000_123), None, None])),
+                ),
+                (
+                    "time32_s",
+                    Arc::new(Time32SecondArray::from(vec![Some(86_399), None, None])),
+                ),
+                (
+                    "time32_ms",
+                    Arc::new(Time32MillisecondArray::from(vec![Some(1), None, None])),
+                ),
+                (
+                    "time64_us",
+                    Arc::new(Time64MicrosecondArray::from(vec![
+                        Some(86_399_999_999),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "time64_ns",
+                    Arc::new(Time64NanosecondArray::from(vec![
+                        Some(1_000_000_001),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "ts_s",
+                    Arc::new(TimestampSecondArray::from(vec![Some(-1), None, None])),
+                ),
+                (
+                    "ts_ms",
+                    Arc::new(TimestampMillisecondArray::from(vec![
+                        Some(1_700_000_000_123),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "ts_us",
+                    Arc::new(TimestampMicrosecondArray::from(vec![
+                        Some(1_700_000_000_123_456),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "ts_ns",
+                    Arc::new(TimestampNanosecondArray::from(vec![
+                        Some(1_700_000_000_123_456_789),
+                        None,
+                        None,
+                    ])),
+                ),
+                (
+                    "ts_us_tz",
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![
+                            Some(1_700_000_000_123_456),
+                            None,
+                            None,
+                        ])
+                        .with_timezone("+02:00"),
+                    ),
+                ),
+                (
+                    "decimal128",
+                    Arc::new(
+                        Decimal128Array::from(vec![Some(-123_456), None, None])
+                            .with_precision_and_scale(10, 3)
+                            .expect("decimal128"),
+                    ),
+                ),
+                (
+                    "decimal256",
+                    Arc::new(
+                        Decimal256Array::from(vec![Some(i256::from(123_456_789_i64)), None, None])
+                            .with_precision_and_scale(50, 5)
+                            .expect("decimal256"),
+                    ),
+                ),
+            ];
+            let fields = Fields::from(
+                children
+                    .iter()
+                    .map(|(name, array)| Field::new(*name, array.data_type().clone(), true))
+                    .collect::<Vec<_>>(),
+            );
+            let arrays: Vec<ArrayRef> = children.into_iter().map(|(_, a)| a).collect();
+            let leaves = StructArray::try_new(
+                fields.clone(),
+                arrays,
+                Some(NullBuffer::from(vec![true, true, false])),
+            )
+            .expect("struct of every leaf type");
+            let leaves: ArrayRef = Arc::new(leaves);
+            let list_of_leaves: ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", DataType::Struct(fields.clone()), true)),
+                OffsetBuffer::from_lengths([2, 0, 1]),
+                Arc::clone(&leaves),
+                Some(NullBuffer::from(vec![true, false, true])),
+            ));
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("leaves", DataType::Struct(fields), true),
+                Field::new("list_of_leaves", list_of_leaves.data_type().clone(), true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2, 3])),
+                    leaves,
+                    list_of_leaves,
+                ],
+            )
+            .expect("leaf types batch");
+            (batch, schema)
+        }
+
+        async fn leaf_types_round_trip(use_prepared_statements: bool, table_name: &str) {
+            let (record_batch, schema) = leaf_types_batch();
+            let result =
+                insert_and_read_back(table_name, use_prepared_statements, &record_batch).await;
+            assert_eq!(result.len(), 1, "one result batch");
+            let casted = try_cast_to(result[0].clone(), Arc::clone(&schema))
+                .expect("every leaf type should decode back from the stored JSON");
+            for (i, field) in schema.fields().iter().enumerate() {
+                assert_eq!(
+                    casted.column(i),
+                    record_batch.column(i),
+                    "column '{}' reads back as written",
+                    field.name()
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn every_leaf_type_round_trips_inside_a_struct_and_a_list_through_prepared_statements(
+        ) {
+            leaf_types_round_trip(true, "leaf_types_prepared").await;
+        }
+
+        #[tokio::test]
+        async fn every_leaf_type_round_trips_inside_a_struct_and_a_list_through_inline_sql() {
+            leaf_types_round_trip(false, "leaf_types_inline").await;
+        }
+
+        /// Arrow's JSON encoder writes a `Duration` as an ISO 8601 period (`PT1S`) that its
+        /// reader does not parse, so a nested column holding one is refused at create rather
+        /// than written and then unreadable.
+        #[tokio::test]
+        async fn a_duration_inside_a_list_or_a_struct_is_refused_at_create() {
+            let cases = [
+                (
+                    "durations",
+                    DataType::new_list(DataType::Duration(TimeUnit::Second), true),
+                ),
+                (
+                    "timing",
+                    DataType::Struct(Fields::from(vec![Field::new(
+                        "elapsed",
+                        DataType::Duration(TimeUnit::Millisecond),
+                        true,
+                    )])),
+                ),
+            ];
+            for (name, data_type) in cases {
+                let schema = Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new(name, data_type.clone(), true),
+                ]));
+                let ctx = SessionContext::new();
+                let err = SqliteTableProviderFactory::default()
+                    .create(&ctx.state(), &external_table(name, &schema))
+                    .await
+                    .expect_err("a nested Duration should be refused at create");
+                let expected =
+                    format!("The field '{name}' has an unsupported data type: {data_type}");
+                assert!(
+                    err.to_string().contains(&expected),
+                    "expected the error to name the field and its type ({expected}), got: {err}"
+                );
+            }
+        }
+
+        /// Both insert paths store a struct as the same JSON text, with every field present
+        /// (`null` for a null field) and nothing after the closing brace.
+        #[tokio::test]
+        async fn both_insert_paths_store_the_same_json_text_for_a_struct() {
+            let meta_fields = Fields::from(vec![
+                Field::new("n", DataType::Int32, true),
+                Field::new("label", DataType::Utf8, true),
+            ]);
+            let meta: ArrayRef = Arc::new(
+                StructArray::try_new(
+                    meta_fields.clone(),
+                    vec![
+                        Arc::new(Int32Array::from(vec![Some(1), None, None])),
+                        Arc::new(StringArray::from(vec![Some("x"), Some("y"), None])),
+                    ],
+                    Some(NullBuffer::from(vec![true, true, false])),
+                )
+                .expect("meta struct"),
+            );
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("meta", DataType::Struct(meta_fields), true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(vec![1, 2, 3])), meta],
+            )
+            .expect("batch");
+
+            let stored_text = |batches: &[RecordBatch]| -> Vec<Option<String>> {
+                batches[0]
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("the raw SQLite read returns the JSON text")
+                    .iter()
+                    .map(|v| v.map(str::to_owned))
+                    .collect()
+            };
+            let prepared = stored_text(&insert_and_read_back("meta_prepared", true, &batch).await);
+            let inline = stored_text(&insert_and_read_back("meta_inline", false, &batch).await);
+            assert_eq!(
+                prepared,
+                vec![
+                    Some(r#"{"n":1,"label":"x"}"#.to_owned()),
+                    Some(r#"{"n":null,"label":"y"}"#.to_owned()),
+                    None,
+                ]
+            );
+            assert_eq!(inline, prepared, "the inline path stores the same text");
+        }
+
+        #[tokio::test]
+        async fn nested_columns_round_trip_through_prepared_statements() {
+            round_trip(true, "nested_issues_prepared").await;
+        }
+
+        #[tokio::test]
+        async fn nested_columns_round_trip_through_inline_sql() {
+            round_trip(false, "nested_issues_inline").await;
+        }
+    }
 }

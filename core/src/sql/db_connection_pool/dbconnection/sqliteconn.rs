@@ -37,28 +37,32 @@ pub struct SqliteConnection {
     pub conn: Connection,
 }
 
+impl SqliteConnection {
+    /// What a column stored as JSON text can hold: every type the table accepts except a
+    /// `Duration`, which Arrow's JSON encoder writes as an ISO 8601 period (`PT1S`) that its
+    /// reader does not parse back.
+    fn is_json_item_supported(data_type: &DataType) -> bool {
+        !matches!(data_type, DataType::Duration(_))
+            && <Self as SchemaValidator>::is_data_type_supported(data_type)
+    }
+}
+
 impl SchemaValidator for SqliteConnection {
     type Error = super::Error;
 
     fn is_data_type_supported(data_type: &DataType) -> bool {
         match data_type {
             DataType::Dictionary(_, _) | DataType::Interval(_) | DataType::Map(_, _) => false,
+            // A list or a struct is stored as JSON text, so it holds whatever its items
+            // hold: a list of structs, a list of lists, a list of dates.
             DataType::List(inner_field)
             | DataType::FixedSizeList(inner_field, _)
             | DataType::LargeList(inner_field) => {
-                match inner_field.data_type() {
-                    dt if dt.is_primitive() => true,
-                    DataType::Utf8
-                    | DataType::Binary
-                    | DataType::Utf8View
-                    | DataType::BinaryView
-                    | DataType::Boolean => true,
-                    _ => false, // nested lists don't support anything else yet
-                }
+                Self::is_json_item_supported(inner_field.data_type())
             }
             DataType::Struct(inner_fields) => inner_fields
                 .iter()
-                .all(|field| Self::is_data_type_supported(field.data_type())),
+                .all(|field| Self::is_json_item_supported(field.data_type())),
             _ => true,
         }
     }

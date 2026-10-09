@@ -1,12 +1,10 @@
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Offset, TimeZone};
 use datafusion::arrow::{
-    array::{
-        array, timezone::Tz, Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array,
-        Int32Array, Int64Array, Int8Array, LargeStringArray, RecordBatch, StringArray,
-        StringViewArray, StructArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
-    },
-    datatypes::{DataType, Field, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit},
+    array::{array, timezone::Tz, Array, ArrayRef, RecordBatch, StructArray},
+    buffer::OffsetBuffer,
+    datatypes::{DataType, Field, Fields, IntervalUnit, SchemaRef, TimeUnit},
+    json::writer::{make_encoder, EncoderOptions},
     util::display::array_value_to_string,
 };
 use datafusion::common::TableReference;
@@ -1377,52 +1375,35 @@ pub(crate) fn map_data_type_to_column_type(data_type: &DataType) -> ColumnType {
     }
 }
 
-macro_rules! serialize_list_values {
-    ($data_type:expr, $list_array:expr, $array_type:ty, $vec_type:ty) => {{
-        let mut list_values: Vec<$vec_type> = vec![];
-        if let Some(array) = $list_array.as_any().downcast_ref::<$array_type>() {
-            for i in 0..array.len() {
-                list_values.push(array.value(i).into());
-            }
-        }
-
-        serde_json::to_string(&list_values).map_err(|e| Error::FailedToCreateInsertStatement {
-            source: Box::new(e),
-        })?
-    }};
-}
-
+/// Pushes one list value as the JSON array Arrow's encoder writes for it, whatever its item
+/// type: nulls stay `null`, and structs, nested lists, dates and decimals encode as the JSON
+/// reader decodes them.
 fn insert_list_into_row_values_json(
     list_array: Arc<dyn Array>,
     list_type: &Arc<Field>,
     row_values: &mut Vec<SimpleExpr>,
 ) -> Result<()> {
-    let data_type = list_type.data_type();
-
-    let json_string: String = match data_type {
-        DataType::Int8 => serialize_list_values!(data_type, list_array, Int8Array, i8),
-        DataType::Int16 => serialize_list_values!(data_type, list_array, Int16Array, i16),
-        DataType::Int32 => serialize_list_values!(data_type, list_array, Int32Array, i32),
-        DataType::Int64 => serialize_list_values!(data_type, list_array, Int64Array, i64),
-        DataType::UInt8 => serialize_list_values!(data_type, list_array, UInt8Array, u8),
-        DataType::UInt16 => serialize_list_values!(data_type, list_array, UInt16Array, u16),
-        DataType::UInt32 => serialize_list_values!(data_type, list_array, UInt32Array, u32),
-        DataType::UInt64 => serialize_list_values!(data_type, list_array, UInt64Array, u64),
-        DataType::Float32 => serialize_list_values!(data_type, list_array, Float32Array, f32),
-        DataType::Float64 => serialize_list_values!(data_type, list_array, Float64Array, f64),
-        DataType::Utf8 => serialize_list_values!(data_type, list_array, StringArray, String),
-        DataType::LargeUtf8 => {
-            serialize_list_values!(data_type, list_array, LargeStringArray, String)
-        }
-        DataType::Utf8View => {
-            serialize_list_values!(data_type, list_array, StringViewArray, String)
-        }
-        DataType::Boolean => serialize_list_values!(data_type, list_array, BooleanArray, bool),
-        _ => unimplemented!(
-            "List to json conversion is not implemented for {}",
-            list_type.data_type()
-        ),
+    let to_error = |e: datafusion::arrow::error::ArrowError| Error::FailedToCreateInsertStatement {
+        source: Box::new(e),
     };
+    let as_list: ArrayRef = Arc::new(
+        array::ListArray::try_new(
+            Arc::clone(list_type),
+            OffsetBuffer::from_lengths([list_array.len()]),
+            list_array,
+            None,
+        )
+        .map_err(to_error)?,
+    );
+    let field = Arc::new(Field::new("item", as_list.data_type().clone(), true));
+    let options = EncoderOptions::default().with_explicit_nulls(true);
+    let mut encoder = make_encoder(&field, as_list.as_ref(), &options).map_err(to_error)?;
+    let mut json = Vec::new();
+    encoder.encode(0, &mut json);
+    let json_string =
+        String::from_utf8(json).map_err(|e| Error::FailedToCreateInsertStatement {
+            source: Box::new(e),
+        })?;
 
     let expr: SimpleExpr = Expr::value(json_string);
     row_values.push(expr);
@@ -1436,32 +1417,18 @@ fn insert_struct_into_row_values_json(
     row_index: usize,
     row_values: &mut Vec<SimpleExpr>,
 ) -> Result<()> {
-    // The length of each column in a StructArray is the same as the length of the StructArray itself.
-    // The presence of null values does not change the length of the columns (affects the validity bitmap only).
-    // Similar to Recordbatch slice: https://github.com/apache/arrow-rs/blob/855666d9e9283c1ef11648762fe92c7c188b68f1/arrow-array/src/record_batch.rs#L375
-    let single_row_columns: Vec<ArrayRef> = (0..array.num_columns())
-        .map(|i| array.column(i).slice(row_index, 1))
-        .collect();
-
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields.clone())), single_row_columns)
-        .map_err(|e| Error::FailedToCreateInsertStatement {
+    // The same encoder and options as the prepared-statement path, so a struct is stored as
+    // the same text (explicit nulls, no trailing newline) whichever path wrote it.
+    let field = Arc::new(Field::new("item", DataType::Struct(fields.clone()), true));
+    let options = EncoderOptions::default().with_explicit_nulls(true);
+    let mut encoder = make_encoder(&field, array, &options).map_err(|e| {
+        Error::FailedToCreateInsertStatement {
             source: Box::new(e),
-        })?;
-
-    let mut writer = datafusion::arrow::json::LineDelimitedWriter::new(Vec::new());
-    writer
-        .write(&batch)
-        .map_err(|e| Error::FailedToCreateInsertStatement {
-            source: Box::new(e),
-        })?;
-    writer
-        .finish()
-        .map_err(|e| Error::FailedToCreateInsertStatement {
-            source: Box::new(e),
-        })?;
-    let json_bytes = writer.into_inner();
-
-    let json = String::from_utf8(json_bytes).map_err(|e| Error::FailedToCreateInsertStatement {
+        }
+    })?;
+    let mut json = Vec::new();
+    encoder.encode(row_index, &mut json);
+    let json = String::from_utf8(json).map_err(|e| Error::FailedToCreateInsertStatement {
         source: Box::new(e),
     })?;
 
