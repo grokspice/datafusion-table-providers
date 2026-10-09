@@ -7,7 +7,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::sql::sqlparser::ast::{self, VisitMut};
 use datafusion::sql::unparser::dialect::Dialect;
 use datafusion_federation::sql::{
-    ast_analyzer::AstAnalyzer, RemoteTableRef, SQLExecutor, SQLFederationProvider, SQLTableSource,
+    ast_analyzer::AstAnalyzer, LogicalOptimizer, MultiPartTableReference, RemoteTable,
+    RemoteTableRef, SQLExecutor, SQLFederationProvider, SQLTable, SQLTableSource,
 };
 use datafusion_federation::{FederatedTableProviderAdaptor, FederatedTableSource};
 use futures::TryStreamExt;
@@ -16,7 +17,9 @@ use std::sync::Arc;
 
 use super::between::SQLiteBetweenVisitor;
 use super::sql_table::SQLiteTable;
-use super::sqlite_interval::SQLiteIntervalVisitor;
+use super::sqlite_interval::{
+    mark_date_operands, mark_federated_date_operands, SQLiteIntervalVisitor,
+};
 use datafusion::{
     common::TableReference,
     datasource::TableProvider,
@@ -32,10 +35,12 @@ impl<T, P> SQLiteTable<T, P> {
         let table_reference = self.base_table.table_reference.clone();
         let schema = Arc::clone(&Arc::clone(&self).base_table.schema());
         let fed_provider = Arc::new(SQLFederationProvider::new(self));
-        Ok(Arc::new(SQLTableSource::new_with_schema(
+        Ok(Arc::new(SQLTableSource::new_with_table(
             fed_provider,
-            RemoteTableRef::from(table_reference),
-            schema,
+            Arc::new(SQLiteRemoteTable::new(
+                RemoteTableRef::from(table_reference),
+                schema,
+            )),
         )))
     }
 
@@ -47,6 +52,41 @@ impl<T, P> SQLiteTable<T, P> {
             table_source,
             self,
         ))
+    }
+}
+
+/// The remote table a federated SQLite scan reads: a [`RemoteTable`] whose logical
+/// optimizer is [`mark_date_operands`], which runs on the typed plan of each
+/// statement sent to SQLite, before it is unparsed, so the interval rewrite in
+/// [`sqlite_ast_analyzer`] can tell a `DATE` operand from a timestamp.
+#[derive(Debug)]
+pub struct SQLiteRemoteTable {
+    remote_table: RemoteTable,
+}
+
+impl SQLiteRemoteTable {
+    pub fn new(table_ref: RemoteTableRef, schema: SchemaRef) -> Self {
+        Self {
+            remote_table: RemoteTable::new(table_ref, schema),
+        }
+    }
+}
+
+impl SQLTable for SQLiteRemoteTable {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn table_reference(&self) -> MultiPartTableReference {
+        SQLTable::table_reference(&self.remote_table)
+    }
+
+    fn schema(&self) -> SchemaRef {
+        SQLTable::schema(&self.remote_table)
+    }
+
+    fn logical_optimizer(&self) -> Option<LogicalOptimizer> {
+        Some(Box::new(mark_date_operands))
     }
 }
 
@@ -87,6 +127,13 @@ impl<T, P> SQLExecutor for SQLiteTable<T, P> {
 
     fn dialect(&self) -> Arc<dyn Dialect> {
         self.base_table.dialect()
+    }
+
+    /// Marks the `DATE` operands of interval arithmetic in every federated
+    /// statement, including one whose only table is inside a subquery, which the
+    /// scan's own optimizer ([`SQLiteRemoteTable`]) is not gathered for.
+    fn logical_optimizer(&self) -> Option<LogicalOptimizer> {
+        Some(Box::new(mark_federated_date_operands))
     }
 
     fn ast_analyzer(&self) -> Option<AstAnalyzer> {
