@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DFSchema, ScalarValue};
 use datafusion::error::DataFusionError;
@@ -10,7 +10,7 @@ use datafusion::logical_expr::expr::ScalarFunction;
 use datafusion::logical_expr::expr_rewriter::NamePreserver;
 use datafusion::logical_expr::{
     BinaryExpr, ColumnarValue, Expr as LogicalExpr, ExprSchemable, LogicalPlan, Operator,
-    ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
 use datafusion::sql::sqlparser::ast::{
     self, BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArgumentList, Ident,
@@ -54,6 +54,18 @@ impl ScalarUDFImpl for DateOperand {
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType, DataFusionError> {
         arg_types.first().cloned().ok_or_else(|| {
+            DataFusionError::Plan(format!("{DATE_OPERAND_MARKER} takes exactly one argument"))
+        })
+    }
+
+    /// The field of the operand this returns, rather than the default
+    /// `Field::new(self.name(), self.return_type(..)?, true)`.
+    ///
+    /// An identity reports the field it was handed. The default reports every call
+    /// nullable, which would widen a `NOT NULL` operand and, with it, every
+    /// expression whose field is computed from it.
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef, DataFusionError> {
+        args.arg_fields.first().map(Arc::clone).ok_or_else(|| {
             DataFusionError::Plan(format!("{DATE_OPERAND_MARKER} takes exactly one argument"))
         })
     }
@@ -746,6 +758,42 @@ mod test {
                 "sqlite_date_operand(t.d) + {} AS {original_name}",
                 lit(ScalarValue::new_interval_mdn(0, 1, 0))
             )
+        );
+    }
+
+    /// The marker reports the field of the operand it returns, `NOT NULL` included.
+    ///
+    /// It is an identity, so the field it reports has to be the field it is handed.
+    /// `ScalarUDFImpl::return_field_from_args` defaults to
+    /// `Field::new(self.name(), self.return_type(..)?, true)` — nullable whatever it
+    /// wrapped — which widens a `NOT NULL` date operand and, with it, every
+    /// expression whose field is computed from it.
+    #[test]
+    fn the_marker_reports_the_field_of_the_operand_it_returns() {
+        use datafusion::logical_expr::ExprSchemable;
+
+        let schema = Schema::new(vec![Field::new("d", DataType::Date32, false)]);
+        let schema = DFSchema::try_from(schema).expect("schema");
+        let marker = ScalarUDF::new_from_impl(DateOperand::new());
+
+        let (_, marked) = marker
+            .call(vec![col("d")])
+            .to_field(&schema)
+            .expect("marked field");
+        assert_eq!(marked.data_type(), &DataType::Date32);
+        assert!(
+            !marked.is_nullable(),
+            "a NOT NULL operand must stay NOT NULL through the marker, got {marked:?}"
+        );
+
+        // And so must the interval expression whose field is computed from it.
+        let (_, shifted) = (marker.call(vec![col("d")])
+            + lit(ScalarValue::new_interval_mdn(0, 1, 0)))
+        .to_field(&schema)
+        .expect("shifted field");
+        assert!(
+            !shifted.is_nullable(),
+            "the shift of a NOT NULL operand must stay NOT NULL, got {shifted:?}"
         );
     }
 
