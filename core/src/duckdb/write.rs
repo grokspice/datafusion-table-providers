@@ -2331,4 +2331,487 @@ mod test {
              {GROWTH_MAX_CHECKPOINTED_FILE_SIZE} bytes"
         );
     }
+    fn upsert_schema() -> SchemaRef {
+        Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]))
+    }
+
+    fn upsert_batch(schema: &SchemaRef, rows: &[(i64, &str)]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::clone(schema),
+            vec![
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .expect("should create a record batch")
+    }
+
+    /// `id` is the primary key, and the conflict target.
+    fn upsert_table_definition(name: &str, schema: &SchemaRef) -> Arc<TableDefinition> {
+        Arc::new(
+            TableDefinition::new(RelationName::new(name), Arc::clone(schema)).with_constraints(
+                crate::util::constraints::tests::get_pk_constraints(&["id"], Arc::clone(schema)),
+            ),
+        )
+    }
+
+    fn upsert_on_id() -> OnConflict {
+        OnConflict::Upsert(ColumnReference::try_from("id").expect("valid column ref"))
+    }
+
+    /// Gives the test database one thread, so one `INSERT` statement processes
+    /// its rows in arrival order. DuckDB keeps the copy it processes first, so a
+    /// write that is one statement keeps the first copy of a repeated key on
+    /// every run, where the parallel scan a multi-threaded database uses keeps
+    /// whichever copy it reaches first.
+    fn single_threaded(pool: &Arc<DuckDbConnectionPool>) {
+        let mut conn = Arc::clone(pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        duckdb
+            .conn
+            .execute("SET threads = 1", [])
+            .expect("to set threads");
+    }
+
+    /// The row count of `table`, and the `name` of the rows `key` selects.
+    fn count_and_name(tx: &Transaction<'_>, table: &str, key: &str) -> (i64, Option<String>) {
+        let count = tx
+            .query_row(&format!("SELECT COUNT(1) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("to count rows");
+        let name = tx
+            .query_row(
+                &format!("SELECT string_agg(name, ',' ORDER BY name) FROM {table} WHERE {key}"),
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("to read the key");
+        (count, name)
+    }
+
+    async fn upsert_write(
+        pool: &Arc<DuckDbConnectionPool>,
+        table_definition: &Arc<TableDefinition>,
+        op: InsertOp,
+        batches: Vec<RecordBatch>,
+    ) {
+        let sink = DuckDBDataSink::new(
+            Arc::clone(pool),
+            Arc::clone(table_definition),
+            op,
+            Some(upsert_on_id()),
+            table_definition.schema(),
+        );
+        let data_sink: Arc<dyn DataSink> = Arc::new(sink);
+        let stream = Box::pin(
+            MemoryStream::try_new(batches, table_definition.schema(), None).expect("to get stream"),
+        );
+        data_sink
+            .write_all(stream, &Arc::new(TaskContext::default()))
+            .await
+            .expect("to write all");
+    }
+
+    /// Regression test for spiceai/spiceai#14643: a full refresh that repeats a
+    /// key in a later record batch keeps the last copy under `on_conflict: upsert`.
+    #[tokio::test]
+    async fn upsert_overwrite_keeps_the_last_copy_of_a_key_repeated_across_batches() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let schema = upsert_schema();
+        let table_definition = upsert_table_definition("upsert_across_batches", &schema);
+
+        let first: Vec<(i64, &str)> = (0..8192).map(|id| (id, "first")).collect();
+        let batches = vec![
+            upsert_batch(&schema, &first),
+            upsert_batch(&schema, &[(0, "last")]),
+        ];
+        upsert_write(&pool, &table_definition, InsertOp::Overwrite, batches).await;
+
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        assert_eq!(
+            count_and_name(&tx, &table_definition.name().to_string(), "id = 0"),
+            (8192, Some("last".to_string()))
+        );
+    }
+
+    /// An append resolves a repeat against a stored row and against an earlier
+    /// row of the same write the same way: the last copy wins.
+    #[tokio::test]
+    async fn upsert_append_keeps_the_last_copy_over_stored_and_earlier_rows() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let schema = upsert_schema();
+        let table_definition = upsert_table_definition("upsert_append", &schema);
+
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+        tx.execute(
+            &format!(
+                "INSERT INTO {} VALUES (0, 'stored'), (1, 'stored')",
+                table.table_name()
+            ),
+            [],
+        )
+        .expect("to seed");
+        tx.commit().expect("to commit");
+
+        let batches = vec![
+            upsert_batch(&schema, &[(0, "first"), (2, "first")]),
+            upsert_batch(&schema, &[(0, "last"), (2, "last")]),
+        ];
+        upsert_write(&pool, &table_definition, InsertOp::Append, batches).await;
+
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let name = table.table_name().to_string();
+        assert_eq!(
+            count_and_name(&tx, &name, "id = 0"),
+            (3, Some("last".to_string()))
+        );
+        assert_eq!(
+            count_and_name(&tx, &name, "id = 1"),
+            (3, Some("stored".to_string()))
+        );
+        assert_eq!(
+            count_and_name(&tx, &name, "id = 2"),
+            (3, Some("last".to_string()))
+        );
+    }
+
+    /// With the database's default thread count, which copy a single statement
+    /// keeps is whichever its parallel scan reaches first; fifty copies of one
+    /// key, one per batch, still end on the last.
+    #[tokio::test]
+    async fn upsert_overwrite_keeps_the_last_of_many_copies_under_a_parallel_scan() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        let schema = upsert_schema();
+        let table_definition = upsert_table_definition("upsert_many_copies", &schema);
+
+        let copies: Vec<String> = (0..50).map(|i| format!("copy {i}")).collect();
+        let batches: Vec<RecordBatch> = copies
+            .iter()
+            .enumerate()
+            .map(|(i, copy)| {
+                let keep: i64 = i64::try_from(i).expect("fits") + 1;
+                upsert_batch(&schema, &[(0, copy.as_str()), (keep, "kept")])
+            })
+            .collect();
+        upsert_write(&pool, &table_definition, InsertOp::Overwrite, batches).await;
+
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        assert_eq!(
+            count_and_name(&tx, &table_definition.name().to_string(), "id = 0"),
+            (51, Some("copy 49".to_string()))
+        );
+    }
+
+    /// Writes `batches` straight into a fresh primary-key table with
+    /// `write_to_table`, below the sink's per-batch constraint check, and
+    /// returns `(count, name of key 0)`.
+    fn write_to_table_upsert(
+        name: &str,
+        schema: &SchemaRef,
+        batches: Vec<RecordBatch>,
+        key: &str,
+    ) -> (i64, Option<String>) {
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let table_definition = upsert_table_definition(name, schema);
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+
+        let (sender, receiver) = mpsc::channel(batches.len().max(1));
+        for batch in batches {
+            sender.try_send(batch).expect("to queue a batch");
+        }
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(
+            &table,
+            &tx,
+            Arc::clone(schema),
+            receiver,
+            Some(&on_conflict),
+        )
+        .expect("to write");
+
+        count_and_name(&tx, &table.table_name().to_string(), key)
+    }
+
+    /// A key repeated inside one record batch keeps its last copy too.
+    #[test]
+    fn upsert_keeps_the_last_copy_of_a_key_repeated_within_a_batch() {
+        let _guard = init_tracing(None);
+        let schema = upsert_schema();
+        let batches = vec![upsert_batch(&schema, &[(0, "a"), (1, "b"), (0, "c")])];
+        assert_eq!(
+            write_to_table_upsert("upsert_within_batch", &schema, batches, "id = 0"),
+            (2, Some("c".to_string()))
+        );
+    }
+
+    /// `-0.0` repeats a stored `0.0` and every NaN repeats a stored NaN in
+    /// DuckDB, so a later copy under either spelling is the one kept.
+    #[test]
+    fn upsert_keeps_the_last_copy_of_a_float_key_duckdb_holds_as_one() {
+        let _guard = init_tracing(None);
+        let schema: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Float64, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let float_batch = |rows: &[(f64, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(arrow::array::Float64Array::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let batches = vec![
+            float_batch(&[(0.0, "zero"), (f64::NAN, "nan")]),
+            float_batch(&[(-0.0, "negative zero"), (-f64::NAN, "another nan")]),
+        ];
+        assert_eq!(
+            write_to_table_upsert("upsert_float_zero", &schema, batches.clone(), "id = 0"),
+            (2, Some("negative zero".to_string()))
+        );
+        assert_eq!(
+            write_to_table_upsert("upsert_float_nan", &schema, batches, "isnan(id)"),
+            (2, Some("another nan".to_string()))
+        );
+    }
+
+    /// A `Date64` key is stored as a `DATE`, so two values on one day are one
+    /// key to `DuckDB`, and the later copy is the one kept.
+    #[test]
+    fn upsert_keeps_the_last_copy_of_a_date64_key_duckdb_stores_as_a_date() {
+        let _guard = init_tracing(None);
+        let schema: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Date64, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let date_batch = |rows: &[(i64, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(arrow::array::Date64Array::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let batches = vec![
+            date_batch(&[(1_000, "first second"), (86_400_000, "next day")]),
+            date_batch(&[(2_000, "second second")]),
+        ];
+        assert_eq!(
+            write_to_table_upsert("upsert_date64", &schema, batches, "id = DATE '1970-01-01'"),
+            (2, Some("second second".to_string()))
+        );
+    }
+
+    /// `DuckDB` resolves two NULL unique keys of one statement as one conflict
+    /// and drops the later row, where across statements it keeps both, so a
+    /// repeated NULL key reaches `DuckDB` in a statement of its own.
+    #[test]
+    fn upsert_keeps_every_row_whose_unique_key_is_null() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let schema: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, true),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let table_definition = Arc::new(TableDefinition::new(
+            RelationName::new("upsert_null_unique"),
+            Arc::clone(&schema),
+        ));
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+        tx.execute(
+            &format!(
+                "CREATE UNIQUE INDEX upsert_null_unique_id ON {} (id)",
+                table.table_name()
+            ),
+            [],
+        )
+        .expect("to create the unique index");
+
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from(vec![None, None, Some(1)])),
+                        Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                    ],
+                )
+                .expect("should create a record batch"),
+            )
+            .expect("to queue the batch");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(
+            &table,
+            &tx,
+            Arc::clone(&schema),
+            receiver,
+            Some(&on_conflict),
+        )
+        .expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id IS NULL"),
+            (3, Some("a,b".to_string()))
+        );
+    }
+
+    /// The insert is positional, so the written data may name its columns
+    /// differently from the table; the conflict target is the table's column.
+    #[test]
+    fn upsert_resolves_the_conflict_target_against_the_table_not_the_written_names() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let table_definition = upsert_table_definition("upsert_renamed_input", &upsert_schema());
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+
+        let written: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("source_id", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("source_name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let batch = |rows: &[(i64, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(Int64Array::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .try_send(batch(&[(0, "first"), (1, "first")]))
+            .expect("to queue");
+        sender.try_send(batch(&[(0, "last")])).expect("to queue");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(&table, &tx, written, receiver, Some(&on_conflict)).expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id = 0"),
+            (2, Some("last".to_string()))
+        );
+    }
+
+    /// The written data may carry a key as a type the insert converts on its
+    /// own terms (text into a `BIGINT`); every row then gets a statement of its
+    /// own, and `"01"` and `"1"` still resolve to the last copy of key 1.
+    #[test]
+    fn upsert_keeps_the_last_copy_of_a_key_written_as_text_into_a_bigint() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let table_definition = upsert_table_definition("upsert_cast_input", &upsert_schema());
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+
+        let written: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let batch = |rows: &[(&str, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(batch(&[("01", "first"), ("2", "other"), ("1", "last")]))
+            .expect("to queue");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(&table, &tx, written, receiver, Some(&on_conflict)).expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id = 1"),
+            (2, Some("last".to_string()))
+        );
+    }
 }
