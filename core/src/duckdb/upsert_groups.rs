@@ -12,9 +12,11 @@
 //! So the write is cut at the first row whose key an earlier row of the same
 //! statement carried. No key repeats within a statement, and across statements
 //! the last copy wins, in arrival order. A write that repeats no key is one
-//! statement. The keys of the current statement are held as hashes; a hash
-//! collision only ends a statement early, which costs one more statement and
-//! changes no result.
+//! statement, unless it carries more than `MAX_KEYS_PER_STATEMENT` distinct
+//! keys: a statement also ends there, to bound the memory the keys take, and
+//! the last copy still wins across the statements that follow. The keys of the
+//! current statement are held as hashes; a hash collision only ends a statement
+//! early, which costs one more statement and changes no result.
 //!
 //! A NULL key is compared like any value. Within one statement `DuckDB` takes
 //! two rows whose unique key is NULL as one conflict and drops the later row,
