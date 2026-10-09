@@ -218,6 +218,11 @@ impl UpsertGroups {
     /// insert casts it; see [`converts_exactly`] for the casts trusted to
     /// agree with `DuckDB`'s.
     fn key_hashes(&self, batch: &RecordBatch) -> Result<Vec<u64>, ArrowError> {
+        if self.isolate_rows {
+            // No row shares a statement, so no key is compared: the insert alone
+            // converts the written key, however arrow would.
+            return Ok(vec![0; batch.num_rows()]);
+        }
         let columns = self
             .keys
             .iter()
@@ -246,24 +251,21 @@ impl UpsertGroups {
 /// `stored` type gives the value `DuckDB`'s insert gives it, so two written
 /// values are one key exactly when the table holds them as one. Only exact
 /// conversions are trusted: no change, a string or binary spelling, a dictionary
-/// or run-end encoding of a trusted type, an integer or float widened, a
-/// timestamp given a time zone, and a `Date32` widened. Anything else, such as
-/// a float written to an integer key (arrow truncates `1.6`, `DuckDB` rounds
-/// it) or text written to a date, is not: such a write puts every row in a
-/// statement of its own, which is slow and right.
+/// or run-end encoding of a trusted type, an integer or float widened, and a
+/// `Date32` widened. Anything else, such as a float written to an integer key
+/// (arrow truncates `1.6`, `DuckDB` rounds it), text written to a date, or a
+/// timestamp given a time zone (`DuckDB` reads it in its session's zone, arrow
+/// in the field's), is not: such a write puts every row in a statement of its
+/// own, which is slow and right.
 fn converts_exactly(written: &DataType, stored: &DataType) -> bool {
     use DataType::{
         Binary, BinaryView, Date32, Date64, Dictionary, Float32, Float64, Int16, Int32, Int64,
-        Int8, LargeBinary, LargeUtf8, RunEndEncoded, Timestamp, UInt16, UInt32, UInt64, UInt8,
-        Utf8, Utf8View,
+        Int8, LargeBinary, LargeUtf8, RunEndEncoded, UInt16, UInt32, UInt64, UInt8, Utf8, Utf8View,
     };
     match (written, stored) {
         (written, stored) if written == stored => true,
         (Dictionary(_, written), stored) => converts_exactly(written, stored),
         (RunEndEncoded(_, written), stored) => converts_exactly(written.data_type(), stored),
-        (Timestamp(written_unit, None), Timestamp(stored_unit, Some(_))) => {
-            written_unit == stored_unit
-        }
         (Utf8 | LargeUtf8 | Utf8View, stored) => matches!(stored, Utf8 | LargeUtf8 | Utf8View),
         (Binary | LargeBinary | BinaryView, stored) => {
             matches!(stored, Binary | LargeBinary | BinaryView)
@@ -1053,6 +1055,48 @@ mod tests {
     }
 
     #[test]
+    fn an_isolated_write_converts_nothing_itself() {
+        // A struct written into a VARCHAR key: arrow has no such cast, DuckDB's
+        // insert does, and no key needs comparing when every row is alone.
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("v", DataType::Utf8, true),
+        ]);
+        let inner = Arc::new(Field::new("a", DataType::Int64, false));
+        let written = Arc::new(Schema::new(vec![
+            Field::new(
+                "id",
+                DataType::Struct(vec![Arc::clone(&inner)].into()),
+                false,
+            ),
+            Field::new("v", DataType::Utf8, true),
+        ]));
+        let ids = arrow::array::StructArray::from(vec![(
+            inner,
+            Arc::new(Int64Array::from(vec![1, 1])) as ArrayRef,
+        )]);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&written),
+            vec![Arc::new(ids), Arc::new(StringArray::from(vec!["a", "b"]))],
+        )
+        .expect("batch");
+        let mut sizes = Vec::new();
+        write_statements(
+            source(vec![batch]),
+            &written,
+            &table_schema,
+            ["id"],
+            |reader| {
+                let rows: u64 = reader.map(|b| b.expect("batch").num_rows() as u64).sum();
+                sizes.push(rows);
+                Ok::<u64, ArrowError>(rows)
+            },
+        )
+        .expect("write");
+        assert_eq!(sizes, vec![1, 1]);
+    }
+
+    #[test]
     fn a_key_written_as_a_narrower_integer_is_compared_as_the_tables_integer() {
         // The table's key is BIGINT; the written data carries it as INTEGER, which
         // the insert widens exactly, so the rows group by value.
@@ -1096,10 +1140,13 @@ mod tests {
         assert!(converts_exactly(&Int32, &Int64));
         assert!(converts_exactly(&Utf8View, &Utf8));
         assert!(converts_exactly(&Date32, &Date64));
-        assert!(converts_exactly(
-            &Timestamp(TimeUnit::Microsecond, None),
-            &Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-        ));
+        assert!(
+            !converts_exactly(
+                &Timestamp(TimeUnit::Microsecond, None),
+                &Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            ),
+            "DuckDB reads a zone-less timestamp in its session's zone"
+        );
         assert!(
             !converts_exactly(&Float64, &Int64),
             "arrow truncates, DuckDB rounds"
