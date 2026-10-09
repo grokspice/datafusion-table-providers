@@ -2411,7 +2411,7 @@ mod test {
             .expect("to count rows");
         let name = tx
             .query_row(
-                &format!("SELECT string_agg(name, ',') FROM {table} WHERE {key}"),
+                &format!("SELECT string_agg(name, ',' ORDER BY name) FROM {table} WHERE {key}"),
                 [],
                 |row| row.get::<_, Option<String>>(0),
             )

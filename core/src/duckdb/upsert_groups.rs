@@ -28,9 +28,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, RecordBatchReader};
 use arrow::compute::cast;
 use arrow::datatypes::{
-    DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationNanosecondType, Float32Type,
-    Float64Type, Schema, SchemaRef, Time64MicrosecondType, Time64NanosecondType, TimeUnit,
-    TimestampMicrosecondType, TimestampNanosecondType,
+    DataType, Date32Type, Date64Type, Float32Type, Float64Type, Schema, SchemaRef,
+    Time64MicrosecondType, Time64NanosecondType, TimeUnit, TimestampMicrosecondType,
+    TimestampNanosecondType,
 };
 use arrow::row::{RowConverter, SortField};
 use arrow_schema::ArrowError;
@@ -230,7 +230,6 @@ fn canonical_type(data_type: &DataType) -> DataType {
         DataType::Timestamp(TimeUnit::Nanosecond, Some(_)) => {
             DataType::Timestamp(TimeUnit::Microsecond, None)
         }
-        DataType::Duration(TimeUnit::Nanosecond) => DataType::Duration(TimeUnit::Microsecond),
         other => other.clone(),
     }
 }
@@ -242,12 +241,12 @@ fn canonical_type(data_type: &DataType) -> DataType {
 /// `DuckDB` keys `-0.0` as a repeat of `0.0` and every NaN as one key, while
 /// their bits, and arrow's row format, tell them apart. It stores a dictionary
 /// column as its values; a `Date64` as a `DATE`, a nanosecond `Time64` as a
-/// microsecond `TIME`, a nanosecond timestamp with a time zone as a microsecond
-/// `TIMESTAMP WITH TIME ZONE`, and a nanosecond duration as a microsecond
-/// `INTERVAL`, each truncated toward zero, as the `/` here does (a nanosecond
-/// timestamp without a time zone is a `TIMESTAMP_NS`, kept exactly). An
-/// `INTERVAL` key is compared as given: `DuckDB` normalizes its months, days
-/// and microseconds against each other, which is not reproduced here.
+/// microsecond `TIME`, and a nanosecond timestamp with a time zone as a
+/// microsecond `TIMESTAMP WITH TIME ZONE`, each truncated toward zero, as the
+/// `/` here does (a nanosecond timestamp without a time zone is a
+/// `TIMESTAMP_NS`, kept exactly). A duration or interval is stored as an
+/// `INTERVAL`, which `DuckDB` refuses as an index key, so it is never a
+/// conflict target.
 fn canonical_key_column(column: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     Ok(match column.data_type() {
         DataType::Dictionary(_, value) => canonical_key_column(&cast(column, value)?)?,
@@ -275,13 +274,6 @@ fn canonical_key_column(column: &ArrayRef) -> Result<ArrayRef, ArrowError> {
             column
                 .as_primitive::<TimestampNanosecondType>()
                 .unary::<_, TimestampMicrosecondType>(|nanoseconds| {
-                    nanoseconds / NANOSECONDS_PER_MICROSECOND
-                }),
-        ),
-        DataType::Duration(TimeUnit::Nanosecond) => Arc::new(
-            column
-                .as_primitive::<DurationNanosecondType>()
-                .unary::<_, DurationMicrosecondType>(|nanoseconds| {
                     nanoseconds / NANOSECONDS_PER_MICROSECOND
                 }),
         ),
@@ -789,13 +781,15 @@ mod tests {
         assert_eq!(
             statement_sizes(
                 vec![
-                    keyed(zoned(vec![1_000, -1_000_001])),
-                    keyed(zoned(vec![1_999, -1_000_000])),
+                    keyed(zoned(vec![1_000, 2_000])),
+                    keyed(zoned(vec![1_999])),
+                    keyed(zoned(vec![-1_000_001])),
+                    keyed(zoned(vec![-1_000_000])),
                 ],
                 &["id"],
             ),
-            vec![2, 2],
-            "both values of the second batch truncate to microseconds the first batch holds"
+            vec![2, 2, 1],
+            "1_999 ns is the microsecond 1_000 ns holds, so it starts a statement; -1_000_001 ns              truncates toward zero to the microsecond -1_000_000 ns holds, so the latter starts              one too"
         );
         assert_eq!(
             statement_sizes(
