@@ -2789,4 +2789,55 @@ mod test {
             (2, Some("last".to_string()))
         );
     }
+
+    /// The written data may carry a key as another type than the table's; the
+    /// insert casts it, so `"01"` and `"1"` into a `BIGINT` key are one key.
+    #[test]
+    fn upsert_compares_a_key_written_as_another_type_as_the_tables_type() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let table_definition = upsert_table_definition("upsert_cast_input", &upsert_schema());
+        let mut conn = pool.connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+
+        let written: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let batch = |rows: &[(&str, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .try_send(batch(&[("01", "first")]))
+            .expect("to queue");
+        sender.try_send(batch(&[("1", "last")])).expect("to queue");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(&table, &tx, written, receiver, Some(&on_conflict)).expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id = 1"),
+            (1, Some("last".to_string()))
+        );
+    }
 }

@@ -84,7 +84,9 @@ where
 /// The batches of one write, handed out one statement at a time.
 struct UpsertGroups {
     source: Receiver<RecordBatch>,
-    key_indices: Vec<usize>,
+    /// Each key column's position in the written data, and the table's type
+    /// for it, which the written column is cast to before it is compared.
+    keys: Vec<(usize, DataType)>,
     converter: RowConverter,
     /// Hashes of the keys the current statement holds.
     seen: HashSet<u64>,
@@ -111,7 +113,7 @@ impl UpsertGroups {
         table_schema: &Schema,
         key_columns: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, ArrowError> {
-        let key_indices = key_columns
+        let keys = key_columns
             .into_iter()
             .map(|column| {
                 let index = key_index(table_schema, column)?;
@@ -123,18 +125,17 @@ impl UpsertGroups {
                         schema.fields().len()
                     )));
                 }
-                Ok(index)
+                Ok((index, table_schema.field(index).data_type().clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let converter = RowConverter::new(
-            key_indices
-                .iter()
-                .map(|&index| SortField::new(canonical_type(schema.field(index).data_type())))
+            keys.iter()
+                .map(|(_, data_type)| SortField::new(canonical_type(data_type)))
                 .collect(),
         )?;
         Ok(Self {
             source,
-            key_indices,
+            keys,
             converter,
             seen: HashSet::new(),
             max_keys: MAX_KEYS_PER_STATEMENT,
@@ -195,12 +196,24 @@ impl UpsertGroups {
             .position(|hash| self.seen.len() >= self.max_keys || !self.seen.insert(*hash))
     }
 
-    /// The hash of each row's key; a NULL is encoded like any value.
+    /// The hash of each row's key; a NULL is encoded like any value. A key
+    /// column of another type than the table's is cast to it first, as the
+    /// insert casts it, so `"01"` and `"1"` written to a `BIGINT` key are one
+    /// key; a value the cast cannot convert compares as NULL, which only ends
+    /// a statement early.
     fn key_hashes(&self, batch: &RecordBatch) -> Result<Vec<u64>, ArrowError> {
         let columns = self
-            .key_indices
+            .keys
             .iter()
-            .map(|&index| canonical_key_column(batch.column(index)))
+            .map(|(index, data_type)| {
+                let column = batch.column(*index);
+                let column = if column.data_type() == data_type {
+                    Arc::clone(column)
+                } else {
+                    cast(column, data_type)?
+                };
+                canonical_key_column(&column)
+            })
             .collect::<Result<Vec<ArrayRef>, _>>()?;
         let rows = self.converter.convert_columns(&columns)?;
         Ok((0..batch.num_rows())
@@ -938,6 +951,53 @@ mod tests {
             sizes,
             vec![1, 2, 1],
             "the second 1_000 is a repeat and starts a statement, which 2_000 joins; 1_999 ns is              the microsecond 1_000 ns holds and starts the third"
+        );
+    }
+
+    #[test]
+    fn a_key_written_as_another_type_is_compared_as_the_tables_type() {
+        // The table's key is BIGINT; the written data carries it as text, which the
+        // insert casts: "01" and "1" are one key.
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Utf8, true),
+        ]);
+        let written = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("v", DataType::Utf8, true),
+        ]));
+        let batch = |ids: Vec<&str>| {
+            RecordBatch::try_new(
+                Arc::clone(&written),
+                vec![
+                    Arc::new(StringArray::from(ids.clone())),
+                    Arc::new(StringArray::from(vec!["v"; ids.len()])),
+                ],
+            )
+            .expect("batch")
+        };
+        let mut sizes = Vec::new();
+        write_statements(
+            source(vec![
+                batch(vec!["01", "2"]),
+                batch(vec!["1"]),
+                batch(vec!["x", "y"]),
+            ]),
+            &written,
+            &table_schema,
+            ["id"],
+            |reader| {
+                let rows: u64 = reader.map(|b| b.expect("batch").num_rows() as u64).sum();
+                sizes.push(rows);
+                Ok::<u64, ArrowError>(rows)
+            },
+        )
+        .expect("write");
+        assert_eq!(
+            sizes,
+            vec![2, 2, 1],
+            "\"1\" repeats \"01\"; \"x\" and \"y\" do not convert and compare as one NULL, so \
+             \"y\" starts a statement"
         );
     }
 }
