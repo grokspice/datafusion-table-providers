@@ -15,13 +15,23 @@
 //! statement. The keys of the current statement are held as hashes; a hash
 //! collision only ends a statement early, which costs one more statement and
 //! changes no result.
+//!
+//! A NULL key is compared like any value. Within one statement `DuckDB` takes
+//! two rows whose unique key is NULL as one conflict and drops the later row,
+//! where across statements, as for a plain insert, it keeps both; so a repeated
+//! NULL key starts a new statement too, and every row is kept.
 
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arrow::array::{Array, ArrayRef, AsArray, RecordBatch, RecordBatchReader};
-use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema, SchemaRef};
+use arrow::compute::cast;
+use arrow::datatypes::{
+    DataType, Date32Type, Date64Type, DurationMicrosecondType, DurationNanosecondType, Float32Type,
+    Float64Type, Schema, SchemaRef, Time64MicrosecondType, Time64NanosecondType, TimeUnit,
+    TimestampMicrosecondType, TimestampNanosecondType,
+};
 use arrow::row::{RowConverter, SortField};
 use arrow_schema::ArrowError;
 use tokio::sync::mpsc::Receiver;
@@ -74,9 +84,9 @@ struct UpsertGroups {
     seen: HashSet<u64>,
     max_keys: usize,
     /// The rows that start the next statement: a batch the current statement
-    /// ended inside, with the hash of every row's key (`None` for a NULL key)
-    /// and the row the next statement starts at.
-    held: Option<(RecordBatch, Vec<Option<u64>>, usize)>,
+    /// ended inside, with the hash of every row's key and the row the next
+    /// statement starts at.
+    held: Option<(RecordBatch, Vec<u64>, usize)>,
     /// The current statement ended at a repeated key; cleared by
     /// [`Self::start_statement`].
     ended: bool,
@@ -99,7 +109,7 @@ impl UpsertGroups {
         let converter = RowConverter::new(
             key_indices
                 .iter()
-                .map(|&index| SortField::new(schema.field(index).data_type().clone()))
+                .map(|&index| SortField::new(canonical_type(schema.field(index).data_type())))
                 .collect(),
         )?;
         Ok(Self {
@@ -158,34 +168,26 @@ impl UpsertGroups {
 
     /// The first row of `hashes` whose key the current statement already holds
     /// (or that would take it past `max_keys`), recording the keys of the rows
-    /// before it. A row with a NULL in its key conflicts with nothing, so it is
-    /// neither recorded nor a repeat.
-    fn first_repeat(&mut self, hashes: &[Option<u64>]) -> Option<usize> {
-        hashes.iter().position(|hash| {
-            let Some(hash) = hash else {
-                return false;
-            };
-            self.seen.len() >= self.max_keys || !self.seen.insert(*hash)
-        })
+    /// before it.
+    fn first_repeat(&mut self, hashes: &[u64]) -> Option<usize> {
+        hashes
+            .iter()
+            .position(|hash| self.seen.len() >= self.max_keys || !self.seen.insert(*hash))
     }
 
-    /// The hash of each row's key, `None` where a key column is NULL.
-    fn key_hashes(&self, batch: &RecordBatch) -> Result<Vec<Option<u64>>, ArrowError> {
-        let columns: Vec<ArrayRef> = self
+    /// The hash of each row's key; a NULL is encoded like any value.
+    fn key_hashes(&self, batch: &RecordBatch) -> Result<Vec<u64>, ArrowError> {
+        let columns = self
             .key_indices
             .iter()
             .map(|&index| canonical_key_column(batch.column(index)))
-            .collect();
+            .collect::<Result<Vec<ArrayRef>, _>>()?;
         let rows = self.converter.convert_columns(&columns)?;
-        let has_nulls = columns.iter().any(|column| column.null_count() > 0);
         Ok((0..batch.num_rows())
             .map(|row| {
-                if has_nulls && columns.iter().any(|column| column.is_null(row)) {
-                    return None;
-                }
                 let mut hasher = DefaultHasher::new();
                 rows.row(row).as_ref().hash(&mut hasher);
-                Some(hasher.finish())
+                hasher.finish()
             })
             .collect())
     }
@@ -216,15 +218,39 @@ fn key_index(schema: &Schema, column: &str) -> Result<usize, ArrowError> {
     }
 }
 
-/// `column` with each float `DuckDB` holds as one key written one way: `-0.0`
-/// as `0.0`, and every NaN as the same NaN. `DuckDB` treats `-0.0` as a repeat
-/// of a stored `0.0` and every NaN as one key, while their bits, and arrow's
-/// row format, tell them apart. The write still carries the values it was
-/// given; only the keys compared change. Any other column is returned as is: a
-/// `DuckDB` key column is a plain `FLOAT` or `DOUBLE`, never a half float or a
-/// float inside a struct or dictionary.
-fn canonical_key_column(column: &ArrayRef) -> ArrayRef {
-    match column.data_type() {
+const MILLISECONDS_PER_DAY: i64 = 86_400_000;
+const NANOSECONDS_PER_MICROSECOND: i64 = 1_000;
+
+/// The type [`canonical_key_column`] compares a key column of `data_type` as.
+fn canonical_type(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Dictionary(_, value) => canonical_type(value),
+        DataType::Date64 => DataType::Date32,
+        DataType::Time64(TimeUnit::Nanosecond) => DataType::Time64(TimeUnit::Microsecond),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some(_)) => {
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        }
+        DataType::Duration(TimeUnit::Nanosecond) => DataType::Duration(TimeUnit::Microsecond),
+        other => other.clone(),
+    }
+}
+
+/// `column` as the key `DuckDB` compares it as, so two values the table holds
+/// as one key hash alike. The write still carries the values it was given;
+/// only the keys compared change.
+///
+/// `DuckDB` keys `-0.0` as a repeat of `0.0` and every NaN as one key, while
+/// their bits, and arrow's row format, tell them apart. It stores a dictionary
+/// column as its values; a `Date64` as a `DATE`, a nanosecond `Time64` as a
+/// microsecond `TIME`, a nanosecond timestamp with a time zone as a microsecond
+/// `TIMESTAMP WITH TIME ZONE`, and a nanosecond duration as a microsecond
+/// `INTERVAL`, each truncated toward zero, as the `/` here does (a nanosecond
+/// timestamp without a time zone is a `TIMESTAMP_NS`, kept exactly). An
+/// `INTERVAL` key is compared as given: `DuckDB` normalizes its months, days
+/// and microseconds against each other, which is not reproduced here.
+fn canonical_key_column(column: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+    Ok(match column.data_type() {
+        DataType::Dictionary(_, value) => canonical_key_column(&cast(column, value)?)?,
         DataType::Float32 => Arc::new(
             column
                 .as_primitive::<Float32Type>()
@@ -235,8 +261,32 @@ fn canonical_key_column(column: &ArrayRef) -> ArrayRef {
                 .as_primitive::<Float64Type>()
                 .unary::<_, Float64Type>(canonical_f64),
         ),
+        DataType::Date64 => Arc::new(column.as_primitive::<Date64Type>().unary::<_, Date32Type>(
+            |milliseconds| i32::try_from(milliseconds / MILLISECONDS_PER_DAY).unwrap_or(i32::MAX),
+        )),
+        DataType::Time64(TimeUnit::Nanosecond) => Arc::new(
+            column
+                .as_primitive::<Time64NanosecondType>()
+                .unary::<_, Time64MicrosecondType>(|nanoseconds| {
+                    nanoseconds / NANOSECONDS_PER_MICROSECOND
+                }),
+        ),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some(_)) => Arc::new(
+            column
+                .as_primitive::<TimestampNanosecondType>()
+                .unary::<_, TimestampMicrosecondType>(|nanoseconds| {
+                    nanoseconds / NANOSECONDS_PER_MICROSECOND
+                }),
+        ),
+        DataType::Duration(TimeUnit::Nanosecond) => Arc::new(
+            column
+                .as_primitive::<DurationNanosecondType>()
+                .unary::<_, DurationMicrosecondType>(|nanoseconds| {
+                    nanoseconds / NANOSECONDS_PER_MICROSECOND
+                }),
+        ),
         _ => Arc::clone(column),
-    }
+    })
 }
 
 fn canonical_f32(value: f32) -> f32 {
@@ -298,8 +348,11 @@ impl RecordBatchReader for StatementReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Float32Array, Float64Array, Int64Array, StringArray};
-    use arrow::datatypes::{Field, Int64Type};
+    use arrow::array::{
+        Date64Array, DictionaryArray, Float32Array, Float64Array, Int64Array, StringArray,
+        Time64NanosecondArray, TimestampNanosecondArray,
+    };
+    use arrow::datatypes::{Field, Int32Type, Int64Type};
     use tokio::sync::mpsc;
 
     fn schema() -> SchemaRef {
@@ -498,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_key_never_repeats_and_never_ends_a_statement() {
+    fn a_repeated_null_key_starts_a_new_statement_so_duckdb_keeps_every_row() {
         let got = statements(
             vec![
                 batch(&[(None, "a"), (Some(1), "b")]),
@@ -508,12 +561,11 @@ mod tests {
         );
         assert_eq!(
             got,
-            vec![rows(&[
-                (None, "a"),
-                (Some(1), "b"),
-                (None, "c"),
-                (None, "d")
-            ])]
+            vec![
+                rows(&[(None, "a"), (Some(1), "b")]),
+                rows(&[(None, "c")]),
+                rows(&[(None, "d")]),
+            ]
         );
     }
 
@@ -686,5 +738,95 @@ mod tests {
         .expect_err("the second statement's error");
         assert_eq!(err.to_string(), "External error: insert failed");
         assert_eq!(statements, 2, "no statement runs after the failed one");
+    }
+
+    /// An `(id, v)` batch whose `id` column is `ids`, of `ids`' own type.
+    fn keyed(ids: ArrayRef) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", ids.data_type().clone(), true),
+            Field::new("v", DataType::Utf8, true),
+        ]));
+        let rows = ids.len();
+        RecordBatch::try_new(
+            schema,
+            vec![ids, Arc::new(StringArray::from(vec!["v"; rows]))],
+        )
+        .expect("batch")
+    }
+
+    #[test]
+    fn a_date64_key_repeats_when_it_names_the_day_duckdb_stores() {
+        // 1 s and 2 s after the epoch are one DATE; -1 ms truncates to that day too;
+        // the next day is another key.
+        let sizes = statement_sizes(
+            vec![
+                keyed(Arc::new(Date64Array::from(vec![1_000, 86_400_000]))),
+                keyed(Arc::new(Date64Array::from(vec![2_000]))),
+                keyed(Arc::new(Date64Array::from(vec![-1]))),
+            ],
+            &["id"],
+        );
+        assert_eq!(sizes, vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn a_nanosecond_time_key_repeats_when_it_names_the_microsecond_duckdb_stores() {
+        let sizes = statement_sizes(
+            vec![
+                keyed(Arc::new(Time64NanosecondArray::from(vec![1_000, 2_000]))),
+                keyed(Arc::new(Time64NanosecondArray::from(vec![1_999]))),
+            ],
+            &["id"],
+        );
+        assert_eq!(sizes, vec![2, 1]);
+    }
+
+    #[test]
+    fn a_zoned_nanosecond_timestamp_key_repeats_at_the_microsecond_but_a_plain_one_does_not() {
+        let zoned = |values: Vec<i64>| {
+            Arc::new(TimestampNanosecondArray::from(values).with_timezone("UTC")) as ArrayRef
+        };
+        assert_eq!(
+            statement_sizes(
+                vec![
+                    keyed(zoned(vec![1_000, -1_000_001])),
+                    keyed(zoned(vec![1_999, -1_000_000])),
+                ],
+                &["id"],
+            ),
+            vec![2, 2],
+            "both values of the second batch truncate to microseconds the first batch holds"
+        );
+        assert_eq!(
+            statement_sizes(
+                vec![
+                    keyed(Arc::new(TimestampNanosecondArray::from(vec![1_000]))),
+                    keyed(Arc::new(TimestampNanosecondArray::from(vec![1_999]))),
+                ],
+                &["id"],
+            ),
+            vec![2],
+            "a TIMESTAMP_NS keeps every nanosecond"
+        );
+    }
+
+    #[test]
+    fn a_dictionary_key_repeats_by_its_value() {
+        let dictionary = |values: Vec<&str>| {
+            Arc::new(
+                values
+                    .into_iter()
+                    .map(Some)
+                    .collect::<DictionaryArray<Int32Type>>(),
+            ) as ArrayRef
+        };
+        let sizes = statement_sizes(
+            vec![
+                keyed(dictionary(vec!["a", "b"])),
+                keyed(dictionary(vec!["b"])),
+            ],
+            &["id"],
+        );
+        assert_eq!(sizes, vec![2, 1]);
     }
 }

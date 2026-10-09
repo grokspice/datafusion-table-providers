@@ -2637,4 +2637,101 @@ mod test {
             (2, Some("another nan".to_string()))
         );
     }
+
+    /// A `Date64` key is stored as a `DATE`, so two values on one day are one
+    /// key to `DuckDB`, and the later copy is the one kept.
+    #[test]
+    fn upsert_keeps_the_last_copy_of_a_date64_key_duckdb_stores_as_a_date() {
+        let _guard = init_tracing(None);
+        let schema: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Date64, false),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let date_batch = |rows: &[(i64, &str)]| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(arrow::array::Date64Array::from(
+                        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    )),
+                    Arc::new(StringArray::from(
+                        rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .expect("should create a record batch")
+        };
+        let batches = vec![
+            date_batch(&[(1_000, "first second"), (86_400_000, "next day")]),
+            date_batch(&[(2_000, "second second")]),
+        ];
+        assert_eq!(
+            write_to_table_upsert("upsert_date64", &schema, batches, "id = DATE '1970-01-01'"),
+            (2, Some("second second".to_string()))
+        );
+    }
+
+    /// `DuckDB` resolves two NULL unique keys of one statement as one conflict
+    /// and drops the later row, where across statements it keeps both, so a
+    /// repeated NULL key reaches `DuckDB` in a statement of its own.
+    #[test]
+    fn upsert_keeps_every_row_whose_unique_key_is_null() {
+        let _guard = init_tracing(None);
+        let pool = get_mem_duckdb();
+        single_threaded(&pool);
+        let schema: SchemaRef = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, true),
+            arrow::datatypes::Field::new("name", arrow::datatypes::DataType::Utf8, false),
+        ]));
+        let table_definition = Arc::new(TableDefinition::new(
+            RelationName::new("upsert_null_unique"),
+            Arc::clone(&schema),
+        ));
+        let mut conn = pool.connect_sync().expect("to connect");
+        let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
+        let tx = duckdb.conn.transaction().expect("to begin transaction");
+        let table = TableManager::new(Arc::clone(&table_definition))
+            .with_internal(false)
+            .expect("to create table");
+        table
+            .create_table(Arc::clone(&pool), &tx)
+            .expect("to create table");
+        tx.execute(
+            &format!(
+                "CREATE UNIQUE INDEX upsert_null_unique_id ON {} (id)",
+                table.table_name()
+            ),
+            [],
+        )
+        .expect("to create the unique index");
+
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .try_send(
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int64Array::from(vec![None, None, Some(1)])),
+                        Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                    ],
+                )
+                .expect("should create a record batch"),
+            )
+            .expect("to queue the batch");
+        drop(sender);
+        let on_conflict = upsert_on_id();
+        write_to_table(
+            &table,
+            &tx,
+            Arc::clone(&schema),
+            receiver,
+            Some(&on_conflict),
+        )
+        .expect("to write");
+
+        assert_eq!(
+            count_and_name(&tx, &table.table_name().to_string(), "id IS NULL"),
+            (3, Some("a,b".to_string()))
+        );
+    }
 }
