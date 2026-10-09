@@ -1,3 +1,4 @@
+use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fmt, sync::Arc};
 
@@ -40,6 +41,7 @@ use tokio::task::JoinHandle;
 
 use super::creator::{TableDefinition, TableManager, ViewCreator};
 use super::file_swap;
+use super::upsert_groups::{StatementReader, UpsertGroups};
 use super::write_settings::DuckDBWriteSettings;
 use super::{to_datafusion_error, RelationName};
 use crate::sql::db_connection_pool::Mode;
@@ -979,6 +981,11 @@ fn checkpoint_after_write(duckdb_conn: &mut DuckDbConnection, table_name: &Relat
 
 #[allow(clippy::doc_markdown)]
 /// Writes a stream of ``RecordBatch``es to a DuckDB table.
+/// Writes every batch of `data_batches` into `table` on `tx`.
+///
+/// An upsert (`ON CONFLICT … DO UPDATE`) is written as one `INSERT` statement
+/// per run of rows that repeats no key, so that the last copy of a repeated key
+/// is the one kept; see [`upsert_groups`]. Every other write is one statement.
 pub(super) fn write_to_table(
     table: &TableManager,
     tx: &Transaction<'_>,
@@ -986,10 +993,43 @@ pub(super) fn write_to_table(
     data_batches: Receiver<RecordBatch>,
     on_conflict: Option<&OnConflict>,
 ) -> datafusion::common::Result<u64> {
-    let stream = FFI_ArrowArrayStream::new(Box::new(RecordBatchReaderFromStream::new(
-        data_batches,
-        schema,
-    )));
+    if let Some(OnConflict::Upsert(target)) = on_conflict {
+        let groups = UpsertGroups::try_new(data_batches, &schema, target.iter())
+            .map_err(|source| DataFusionError::ArrowError(Box::new(source), None))?;
+        let groups = Arc::new(Mutex::new(groups));
+        let mut rows = 0;
+        loop {
+            groups
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .start_statement();
+            let reader = StatementReader::new(Arc::clone(&groups), Arc::clone(&schema));
+            rows += insert_from_reader(table, tx, Box::new(reader), on_conflict)?;
+            if groups
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_exhausted()
+            {
+                return Ok(rows);
+            }
+        }
+    }
+    insert_from_reader(
+        table,
+        tx,
+        Box::new(RecordBatchReaderFromStream::new(data_batches, schema)),
+        on_conflict,
+    )
+}
+
+/// One `INSERT INTO table SELECT * FROM <arrow scan of reader>` statement.
+fn insert_from_reader(
+    table: &TableManager,
+    tx: &Transaction<'_>,
+    reader: Box<dyn RecordBatchReader + Send>,
+    on_conflict: Option<&OnConflict>,
+) -> datafusion::common::Result<u64> {
+    let stream = FFI_ArrowArrayStream::new(reader);
 
     let current_ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

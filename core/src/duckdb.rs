@@ -53,6 +53,7 @@ mod creator;
 mod file_swap;
 mod settings;
 pub mod sql_table;
+mod upsert_groups;
 pub mod write;
 pub mod write_settings;
 pub use creator::{RelationName, TableDefinition, TableManager, ViewCreator};
