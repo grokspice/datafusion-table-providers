@@ -2398,7 +2398,7 @@ mod test {
     /// every run, where the parallel scan a multi-threaded database uses keeps
     /// whichever copy it reaches first.
     fn single_threaded(pool: &Arc<DuckDbConnectionPool>) {
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         duckdb
             .conn
@@ -2463,7 +2463,7 @@ mod test {
         ];
         upsert_write(&pool, &table_definition, InsertOp::Overwrite, batches).await;
 
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         assert_eq!(
@@ -2482,7 +2482,7 @@ mod test {
         let schema = upsert_schema();
         let table_definition = upsert_table_definition("upsert_append", &schema);
 
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let table = TableManager::new(Arc::clone(&table_definition))
@@ -2544,7 +2544,7 @@ mod test {
             .collect();
         upsert_write(&pool, &table_definition, InsertOp::Overwrite, batches).await;
 
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         assert_eq!(
@@ -2565,7 +2565,7 @@ mod test {
         let pool = get_mem_duckdb();
         single_threaded(&pool);
         let table_definition = upsert_table_definition(name, schema);
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let table = TableManager::new(Arc::clone(&table_definition))
@@ -2691,7 +2691,7 @@ mod test {
             RelationName::new("upsert_null_unique"),
             Arc::clone(&schema),
         ));
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let table = TableManager::new(Arc::clone(&table_definition))
@@ -2747,7 +2747,7 @@ mod test {
         let pool = get_mem_duckdb();
         single_threaded(&pool);
         let table_definition = upsert_table_definition("upsert_renamed_input", &upsert_schema());
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let table = TableManager::new(Arc::clone(&table_definition))
@@ -2799,7 +2799,7 @@ mod test {
         let pool = get_mem_duckdb();
         single_threaded(&pool);
         let table_definition = upsert_table_definition("upsert_cast_input", &upsert_schema());
-        let mut conn = pool.connect_sync().expect("to connect");
+        let mut conn = Arc::clone(&pool).connect_sync().expect("to connect");
         let duckdb = DuckDB::duckdb_conn(&mut conn).expect("to get duckdb conn");
         let tx = duckdb.conn.transaction().expect("to begin transaction");
         let table = TableManager::new(Arc::clone(&table_definition))
