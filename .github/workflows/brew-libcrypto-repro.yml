@@ -1,0 +1,43 @@
+name: brew libcrypto repro
+on:
+  push:
+    branches: [ci-sandbox/brew-libcrypto-repro]
+permissions:
+  contents: read
+jobs:
+  link:
+    name: link (${{ matrix.case }})
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: before (-L brew_prefix/lib)
+            libdir: lib
+          - case: after (-L brew_prefix/opt/unixodbc/lib)
+            libdir: opt/unixodbc/lib
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Same as the release/2.3 "Install missing tools (Mac)" step on a hosted image without unixodbc.
+      - name: brew install cmake unixodbc
+        run: |
+          brew update
+          brew install cmake unixodbc
+          brew link --overwrite cmake || true
+      - name: Show the libcrypto Homebrew linked
+        run: |
+          brew_prefix=$(brew --prefix)
+          ls -l "$brew_prefix"/lib/libcrypto* "$brew_prefix"/lib/libssl* || true
+          brew list --versions | grep -i openssl || true
+          sw_vers
+      - name: cargo build --release
+        working-directory: repro
+        run: |
+          brew_prefix=$(brew --prefix)
+          export RUSTFLAGS="-L $brew_prefix/${{ matrix.libdir }}"
+          echo "RUSTFLAGS=$RUSTFLAGS"
+          cargo build --release
+          ./target/release/brew-libcrypto-repro

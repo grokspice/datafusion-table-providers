@@ -1,0 +1,10 @@
+[package]
+name = "brew-libcrypto-repro"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Same rdkafka version and feature union as spiced on release/2.3
+# (crates/runtime: ssl-vendored; crates/data_components: cmake-build).
+[dependencies]
+rdkafka = { version = "=0.39.0", features = ["ssl-vendored", "cmake-build"] }
