@@ -11,25 +11,23 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
-      - name: Open a PR with GITHUB_TOKEN, then try to approve its held runs
+      - name: Open a PR with GITHUB_TOKEN, push twice, approve only the second commit
         shell: bash
         run: |
           set -euo pipefail
-          B="probe-child-${GITHUB_RUN_ID}"
+          B="probe-child-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git config user.name probe; git config user.email probe@example.invalid
-          git checkout -b "$B"; date > probe.txt; git add probe.txt; git commit -qm probe
+          git checkout -b "$B"; date > probe.txt; git add probe.txt; git commit -qm one
           git push -q origin "HEAD:$B"
           gh pr create --base sandbox/approve-held-probe --head "$B" --title "probe $B" --body probe
-          for i in $(seq 1 20); do
-            out=$(gh api "repos/$GH_REPO/actions/runs?branch=$B&event=pull_request" --jq '.workflow_runs[]|"\(.id) \(.status) \(.conclusion)"')
-            [ -n "$out" ] && break; sleep 3
-          done
-          echo "BEFORE: $out"
-          for id in $(gh api "repos/$GH_REPO/actions/runs?branch=$B&event=pull_request" --jq '.workflow_runs[]|select(.conclusion=="action_required")|.id'); do
-            echo "approve $id:"; gh api -X POST "repos/$GH_REPO/actions/runs/$id/approve" && echo " -> ok" || echo " -> refused"
-          done
-          sleep 30
-          echo "AFTER:"; gh api "repos/$GH_REPO/actions/runs?branch=$B&event=pull_request" --jq '.workflow_runs[]|"\(.id) \(.status) \(.conclusion)"'
+          OLD_SHA="$(git rev-parse HEAD)"
+          sleep 20
+          date >> probe.txt; git commit -qam two; git push -q origin "HEAD:$B"
+          NEW_SHA="$(git rev-parse HEAD)"
+          bash .github/scripts/approve_bot_pr_runs.sh "$B" "$NEW_SHA"
+          sleep 40
+          echo "OLD $OLD_SHA:"; gh api "repos/$GITHUB_REPOSITORY/actions/runs?branch=$B&head_sha=$OLD_SHA" --jq '.workflow_runs[]|"  \(.id) \(.event) \(.status) \(.conclusion)"'
+          echo "NEW $NEW_SHA:"; gh api "repos/$GITHUB_REPOSITORY/actions/runs?branch=$B&head_sha=$NEW_SHA" --jq '.workflow_runs[]|"  \(.id) \(.event) \(.status) \(.conclusion)"'
+          gh pr close "$B" --delete-branch
