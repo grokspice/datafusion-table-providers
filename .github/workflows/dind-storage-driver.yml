@@ -1,0 +1,51 @@
+---
+# Reproduction: which storage driver does dockerd pick inside the runner pod's
+# dind container, and how long do concurrent container creates take with it?
+name: dind storage driver
+on:
+  push:
+    branches: [ci-sandbox/dind-storage-driver]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PARALLEL: '12'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create a kind cluster
+        run: |
+          set -euo pipefail
+          curl -fsSL -o kind https://github.com/kubernetes-sigs/kind/releases/download/v0.29.0/kind-linux-amd64
+          chmod +x kind
+          ./kind create cluster --image kindest/node:v1.33.1 --wait 120s
+          docker pull docker:dind
+          ./kind load docker-image docker:dind
+      - name: Measure each layout
+        run: |
+          set -euo pipefail
+          for layout in rootfs volume; do
+            kubectl apply -f "test/dind-storage/$layout.yaml"
+            kubectl wait --for=condition=Ready "pod/$layout" --timeout=300s
+            d() { kubectl exec "$layout" -c dind -- "$@"; }
+            echo "LAYOUT=$layout DRIVER=$(d docker info --format '{{.Driver}}') STATUS=$(d docker info --format '{{json .DriverStatus}}')"
+            d docker version --format 'LAYOUT='"$layout"' SERVER={{.Server.Version}}'
+            d sh -c 'grep " /var/lib/docker \| / " /proc/mounts' || true
+            t0=$(date +%s%3N); d docker pull -q postgres:18 > /dev/null; echo "LAYOUT=$layout PULL_MS=$(( $(date +%s%3N) - t0 ))"
+            # Create and start $PARALLEL containers at once, as nextest's
+            # process-per-test model does with container-backed tests.
+            t0=$(date +%s%3N)
+            for i in $(seq 1 "$PARALLEL"); do
+              ( s=$(date +%s%3N); d docker run -d --name "pg$i" -e POSTGRES_PASSWORD=x postgres:18 > /dev/null; echo "LAYOUT=$layout RUN_MS_$i=$(( $(date +%s%3N) - s ))" ) &
+            done
+            wait
+            echo "LAYOUT=$layout ALL_RUN_MS=$(( $(date +%s%3N) - t0 ))"
+            t0=$(date +%s%3N)
+            for i in $(seq 1 "$PARALLEL"); do d docker rm -f "pg$i" > /dev/null & done
+            wait
+            echo "LAYOUT=$layout ALL_RM_MS=$(( $(date +%s%3N) - t0 ))"
+            d du -sh /var/lib/docker || true
+            kubectl delete pod "$layout" --wait=true
+          done

@@ -1,0 +1,21 @@
+# The dind container as the spiceai-dev-runners template declares it (image, args,
+# privileged). Layout "rootfs": /var/lib/docker on the container's own overlayfs root filesystem, as the template does today.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rootfs
+spec:
+  containers:
+    - name: dind
+      image: docker:dind
+      imagePullPolicy: IfNotPresent
+      args:
+        - dockerd
+        - --host=unix:///var/run/docker.sock
+      securityContext:
+        privileged: true
+      startupProbe:
+        exec:
+          command: [docker, info]
+        failureThreshold: 24
+        periodSeconds: 5

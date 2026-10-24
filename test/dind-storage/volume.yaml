@@ -1,0 +1,27 @@
+# The dind container as the spiceai-dev-runners template declares it (image, args,
+# privileged). Layout "volume": /var/lib/docker on an emptyDir volume on the node's filesystem.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume
+spec:
+  containers:
+    - name: dind
+      image: docker:dind
+      imagePullPolicy: IfNotPresent
+      args:
+        - dockerd
+        - --host=unix:///var/run/docker.sock
+      securityContext:
+        privileged: true
+      startupProbe:
+        exec:
+          command: [docker, info]
+        failureThreshold: 24
+        periodSeconds: 5
+      volumeMounts:
+        - name: docker-data
+          mountPath: /var/lib/docker
+  volumes:
+    - name: docker-data
+      emptyDir: {}
