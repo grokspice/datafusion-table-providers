@@ -1,0 +1,59 @@
+---
+# Runs the two image-pull steps from spiceai/spiceai#15517's integration.yml,
+# verbatim, against the real registries on a GitHub-hosted runner.
+name: docker pull step
+on:
+  push:
+    branches: [ci-sandbox/docker-pull-step]
+permissions:
+  contents: read
+jobs:
+  partitions-step:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull database images
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Each source's default release line (the newest in test/source_versions.json).
+          list="$(jq -r 'to_entries[] | select(.key != "description") | "\(.value.image):\(.value.versions[-1].version)"' test/source_versions.json)"
+          mapfile -t images <<<"${list}"
+          bash .github/scripts/docker_pull.sh "${images[@]}" docker.io/gvenzl/oracle-free:latest
+      - name: Show the pulled images
+        run: docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+  source-versions-step:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - source: postgres
+            version: '16'
+          - source: mysql
+            version: '8.4'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull ${{ matrix.source }} ${{ matrix.version }}
+        env:
+          SOURCE: ${{ matrix.source }}
+          VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          image="$(jq -r --arg source "${SOURCE}" '.[$source].image' test/source_versions.json)"
+          bash .github/scripts/docker_pull.sh "${image}:${VERSION}"
+  unknown-tag-fails:
+    # Negative case: a tag that does not exist must fail once, without retries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull a missing tag
+        run: |
+          set +e
+          start=$(date +%s)
+          bash .github/scripts/docker_pull.sh docker.io/library/postgres:does-not-exist-15517
+          rc=$?
+          echo "rc=$rc elapsed=$(( $(date +%s) - start ))s"
+          [ "$rc" -ne 0 ] || { echo "::error::a missing tag must fail"; exit 1; }
