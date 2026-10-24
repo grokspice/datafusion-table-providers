@@ -1,0 +1,8 @@
+name: probe-pr
+on:
+  pull_request:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "ran on ${{ github.head_ref }}"
