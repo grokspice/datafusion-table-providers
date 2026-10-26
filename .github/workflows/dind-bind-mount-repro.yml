@@ -1,0 +1,39 @@
+name: dind bind-mount repro
+on:
+  push:
+    branches: [ci-sandbox/dind-bind-mount]
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Docker-in-Docker daemon that shares only the work volume
+        run: |
+          set +e -u
+          WORK="$RUNNER_TEMP/work"
+          mkdir -p "$WORK" "$HOME/.spice/bin"
+          # A stand-in executable outside the shared volume, where install-spice puts spiced.
+          cp /usr/bin/true "$HOME/.spice/bin/spiced"
+          ls -la "$HOME/.spice/bin/spiced"
+          docker run -d --privileged --name dind -e DOCKER_TLS_CERTDIR= \
+            -v "$WORK:$WORK" -p 2375:2375 docker:dind
+          export DOCKER_HOST=tcp://127.0.0.1:2375
+          for _ in $(seq 90); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format 'daemon {{.ServerVersion}}'
+          docker pull -q ubuntu:26.04
+          USER_ARGS=(--user "$(id -u):$(id -g)")
+
+          echo "== before: mount the binary from outside the shared volume (trunk spicescript)"
+          docker run --rm --init "${USER_ARGS[@]}" \
+            -v "$HOME/.spice/bin/spiced:/usr/local/bin/spiced:ro" \
+            ubuntu:26.04 /usr/local/bin/spiced
+          echo "before exit=$?"
+
+          echo "== after: copy it into the shared work directory first (the fix)"
+          cp "$HOME/.spice/bin/spiced" "$WORK/spiced.bin"
+          docker run --rm --init "${USER_ARGS[@]}" \
+            -v "$WORK/spiced.bin:/usr/local/bin/spiced:ro" \
+            ubuntu:26.04 /usr/local/bin/spiced
+          echo "after exit=$?"
