@@ -1,0 +1,50 @@
+name: generate hadoop warehouse fixture
+on:
+  push:
+    branches: [hadoop-fixture-gen]
+permissions:
+  contents: read
+jobs:
+  gen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fetch the spiceai seed scripts
+        run: |
+          set -euo pipefail
+          base=https://raw.githubusercontent.com/spiceai/spiceai/2908aa13d38020e0fd5f318c147b8921fc996615/crates/data_components/tests/hadoop_data
+          mkdir seed && cd seed
+          for f in Dockerfile setup_spark.sh setup_minio_hadoop.sh setup_file_hadoop.sh; do curl -fsSL "$base/$f" -o "$f"; done
+          # Drop the keep-alive so the container exits once seeding is done.
+          sed -i '/^tail -f \/dev\/null/d' setup_minio_hadoop.sh
+          chmod +x ./*.sh
+          sha256sum ./*
+      - name: Start MinIO
+        run: |
+          set -euo pipefail
+          docker network create hadoopnet
+          docker run -d --name minio --network hadoopnet --user 0:0 \
+            -e MINIO_ROOT_USER=admin -e MINIO_ROOT_PASSWORD=password -e MINIO_DOMAIN=minio \
+            cgr.dev/chainguard/minio:latest server /data
+          for i in $(seq 1 30); do docker run --rm --network hadoopnet curlimages/curl:8.10.1 -fsS http://minio:9000/minio/health/live && break; sleep 2; done
+      - name: Build the seed image and run the MinIO seed
+        run: |
+          set -euo pipefail
+          docker build -t hadoop-seed seed
+          docker run --rm --network hadoopnet -e AWS_ACCESS_KEY_ID=admin -e AWS_SECRET_ACCESS_KEY=password -e AWS_REGION=us-east-1 \
+            --entrypoint /usr/local/bin/setup_minio_hadoop.sh hadoop-seed 2>&1 | tee seed.log
+          test -f seed.log
+      - name: Export the bucket
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --network hadoopnet -v "$PWD/out:/out" --entrypoint bash hadoop-seed -c \
+            'mc alias set minio http://minio:9000 admin password >/dev/null && mc mirror minio/hadoop /out/hadoop && mc anonymous get minio/hadoop'
+          sudo chown -R "$(id -u)" out
+          find out -type f | sort | xargs ls -la
+          find out -name '*.json' -exec sh -c 'echo "== $1"; cat "$1"; echo' _ {} \;
+          find out -name 'version-hint.text' -exec sh -c 'echo "== $1"; cat "$1"; echo' _ {} \;
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hadoop-warehouse
+          path: out/hadoop
