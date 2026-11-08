@@ -3,81 +3,24 @@ on:
   push:
     branches: [ci-sandbox/rootless-keyring-quota]
 jobs:
-  probe:
+  image:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [stock, nokeyring, nokeyring-systemdcgroup]
+    timeout-minutes: 30
     steps:
-      - name: Install rootless dockerd running as the job's own user
+      - uses: actions/checkout@v4
+      - name: Build the arc-runner-dind Dockerfile from the fix branch (1b887bc7a6)
+        run: docker build -q -t dind-fix dind
+      - name: Baked config and entrypoint flag
         run: |
           set -euxo pipefail
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          sudo apt-get update -qq && sudo apt-get install -y -qq uidmap >/dev/null
-          sudo systemctl disable --now docker.service docker.socket
-          sudo rm -f /var/run/docker.sock
-          curl -fsSL https://get.docker.com/rootless | FORCE_ROOTLESS_INSTALL=1 SKIP_IPTABLES=1 sh
-          echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "$GITHUB_ENV"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-      - name: Restart dockerd with --config-file /etc/docker/daemon.json and the systemd cgroup driver
-        env:
-          VARIANT: ${{ matrix.variant }}
+          docker run --rm --entrypoint cat dind-fix /etc/docker/daemon.json
+          docker run --rm --entrypoint grep dind-fix -n -- '--config-file' /usr/local/bin/dind-entrypoint
+          docker run --rm --entrypoint dockerd dind-fix --version
+      - name: dockerd --validate accepts the baked config
+        run: docker run --rm --entrypoint dockerd dind-fix --validate --config-file /etc/docker/daemon.json
+      - name: Negative control - dockerd --validate rejects a broken runtime config
         run: |
-          set -euo pipefail
-          sudo mkdir -p /etc/docker
-          case "$VARIANT" in
-            stock) echo '{}' | sudo tee /etc/docker/daemon.json ;;
-            nokeyring) sudo tee /etc/docker/daemon.json <<'JSON'
-          {"default-runtime":"runc-no-keyring","runtimes":{"runc-no-keyring":{"runtimeType":"io.containerd.runc.v2","options":{"NoNewKeyring":true}}}}
-          JSON
-            ;;
-            nokeyring-systemdcgroup) sudo tee /etc/docker/daemon.json <<'JSON'
-          {"default-runtime":"runc-no-keyring","runtimes":{"runc-no-keyring":{"runtimeType":"io.containerd.runc.v2","options":{"NoNewKeyring":true,"SystemdCgroup":true}}}}
-          JSON
-            ;;
-          esac
-          systemctl --user stop docker
-          nohup dockerd-rootless.sh --config-file /etc/docker/daemon.json --exec-opt native.cgroupdriver=systemd > "$RUNNER_TEMP/dockerd.log" 2>&1 &
-          for _ in $(seq 60); do docker info >/dev/null 2>&1 && break; sleep 1; done
-          docker info --format 'server={{.ServerVersion}} DefaultRuntime={{.DefaultRuntime}} CgroupDriver={{.CgroupDriver}} security={{json .SecurityOptions}}'
-          echo "maxkeys=$(cat /proc/sys/kernel/keys/maxkeys)"
-          docker pull -q busybox:1.37; docker pull -q python:3.13-alpine
-      - name: Container cgroup, pause, exec, non-root user, network
-        run: |
-          set -euxo pipefail
-          docker run -d --name probe busybox:1.37 sleep 300
-          docker inspect probe --format 'runtime={{.HostConfig.Runtime}}'
-          docker exec probe cat /proc/self/cgroup
-          pid=$(docker inspect probe --format '{{.State.Pid}}'); cat /proc/$pid/cgroup
-          docker pause probe && docker unpause probe && echo pause-ok
-          docker exec probe sh -c 'echo exec-ok'
-          docker rm -f probe
-          docker run --rm --memory 64m busybox:1.37 cat /sys/fs/cgroup/memory.max
-          docker run --rm --user 999:999 busybox:1.37 id
-          docker run --rm busybox:1.37 wget -q -O /dev/null -T 10 http://example.com && echo network-ok
-      - name: Default seccomp still denies keyctl inside a container
-        run: |
-          cat > "$RUNNER_TEMP/k.py" <<'PY'
-          import ctypes, os
-          libc = ctypes.CDLL(None, use_errno=True)
-          # keyctl(KEYCTL_GET_KEYRING_ID=0, KEY_SPEC_SESSION_KEYRING=-3, create=0); x86_64 syscall 250
-          r = libc.syscall(250, 0, -3, 0)
-          print("keyctl ->", r, os.strerror(ctypes.get_errno()) if r < 0 else "ok")
-          PY
-          echo "default seccomp:"; docker run --rm -v "$RUNNER_TEMP/k.py:/k.py:ro" python:3.13-alpine python /k.py
-          echo "seccomp=unconfined (control):"; docker run --rm --security-opt seccomp=unconfined -v "$RUNNER_TEMP/k.py:/k.py:ro" python:3.13-alpine python /k.py
-      - name: Key quota under 230 containers
-        run: |
-          uid=$(id -u); ok=0; fail=0; first=
-          keys() { awk -v u="$uid:" '$1==u{print "qnkeys/maxkeys=" $4 " qnbytes/maxbytes=" $5}' /proc/key-users; }
-          echo "before: $(keys)"
-          for i in $(seq 1 230); do
-            if out=$(docker run -d --name "k$i" busybox:1.37 sleep 1800 2>&1); then ok=$((ok+1)); else fail=$((fail+1)); [ -n "$first" ] || first="container $i: $(echo "$out" | grep -m1 'Error response')"; fi
-          done
-          echo "after 230: $(keys)"
-          echo "started=$ok failed=$fail"
-          [ -z "$first" ] || echo "first failure: $first"
-          docker ps -aq | xargs -r docker rm -f >/dev/null
-          echo "after cleanup: $(keys)"
+          set +e
+          printf '{"default-runtime":"nope","runtimes":{}}' > bad.json
+          docker run --rm -v "$PWD/bad.json:/bad.json:ro" --entrypoint dockerd dind-fix --validate --config-file /bad.json
+          rc=$?; echo "exit=$rc"; test "$rc" -ne 0
