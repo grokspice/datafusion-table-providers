@@ -1,0 +1,77 @@
+name: rootless-keyring-probe
+on:
+  push:
+    branches: [ci-sandbox/rootless-keyring-quota]
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Install rootless dockerd running as the job's own user
+        run: |
+          set -euxo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq uidmap >/dev/null
+          sudo systemctl disable --now docker.service docker.socket
+          sudo rm -f /var/run/docker.sock
+          curl -fsSL https://get.docker.com/rootless | FORCE_ROOTLESS_INSTALL=1 SKIP_IPTABLES=1 sh
+          echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "$GITHUB_ENV"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Environment
+        run: |
+          uname -r; id
+          echo "maxkeys=$(cat /proc/sys/kernel/keys/maxkeys) maxbytes=$(cat /proc/sys/kernel/keys/maxbytes)"
+          docker version --format 'server {{.Server.Version}}'
+          docker info --format 'rootless={{json .SecurityOptions}} runtime={{.DefaultRuntime}}'
+          docker pull -q busybox:1.37
+      - name: Probe script
+        run: |
+          cat > "$RUNNER_TEMP/probe.sh" <<'SH'
+          #!/bin/bash
+          # usage: probe.sh <label> <count>
+          label=$1; n=$2; uid=$(id -u); ok=0; fail=0; first=
+          keys() { awk -v u="$uid:" '$1==u{print "qnkeys/maxkeys=" $4 " qnbytes/maxbytes=" $5}' /proc/key-users; }
+          echo "[$label] before: $(keys)"
+          for i in $(seq 1 "$n"); do
+            if out=$(docker run -d --name "k$i" busybox:1.37 sleep 1800 2>&1); then ok=$((ok+1)); else fail=$((fail+1)); [ -n "$first" ] || first="container $i: $out"; fi
+            if [ "$i" = 50 ]; then echo "[$label] after 50 runs: $(keys)"; fi
+          done
+          echo "[$label] after $n runs: $(keys)"
+          echo "[$label] started=$ok failed=$fail"
+          [ -z "$first" ] || echo "[$label] first failure: $first"
+          docker ps -aq | xargs -r docker rm -f >/dev/null
+          sleep 2; echo "[$label] after cleanup: $(keys)"
+          SH
+          chmod +x "$RUNNER_TEMP/probe.sh"
+      - name: "A: stock runc (what arc-runner-dind runs today), 230 containers"
+        run: |
+          docker info --format 'DefaultRuntime={{.DefaultRuntime}}'
+          "$RUNNER_TEMP/probe.sh" A 230
+      - name: "B: default runtime = runc.v2 shim with NoNewKeyring, 230 containers"
+        run: |
+          mkdir -p ~/.config/docker
+          cat > ~/.config/docker/daemon.json <<'JSON'
+          {
+            "default-runtime": "runc-no-keyring",
+            "runtimes": {
+              "runc-no-keyring": {
+                "runtimeType": "io.containerd.runc.v2",
+                "options": { "NoNewKeyring": true }
+              }
+            }
+          }
+          JSON
+          systemctl --user restart docker
+          for _ in $(seq 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+          docker info --format 'DefaultRuntime={{.DefaultRuntime}}'
+          "$RUNNER_TEMP/probe.sh" B 230
+      - name: "B: containers still work (non-root user, pause, exec, network)"
+        run: |
+          set -euxo pipefail
+          docker run --rm --user 999:999 busybox:1.37 id
+          docker run -d --name p busybox:1.37 sleep 300
+          docker pause p && docker unpause p
+          docker exec p sh -c 'echo exec-ok'
+          docker inspect p --format 'runtime={{.HostConfig.Runtime}}'
+          docker rm -f p
+          docker run --rm busybox:1.37 wget -q -O /dev/null -T 10 http://example.com && echo network-ok
