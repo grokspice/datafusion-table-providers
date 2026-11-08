@@ -1,0 +1,57 @@
+name: rootless-dind-probe
+on:
+  push:
+    branches: [ci-sandbox/rootless-cluster-probe]
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Install rootless dockerd running as the job's own user
+        run: |
+          set -euxo pipefail
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq uidmap >/dev/null
+          sudo systemctl disable --now docker.service docker.socket
+          sudo rm -f /var/run/docker.sock
+          curl -fsSL https://get.docker.com/rootless | FORCE_ROOTLESS_INSTALL=1 SKIP_IPTABLES=1 sh
+          echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "$GITHUB_ENV"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Daemon is rootless
+        run: |
+          docker info --format '{{json .SecurityOptions}}'
+          echo "runner uid:gid = $(id -u):$(id -g)"
+          docker pull -q ubuntu:26.04 || docker pull -q ubuntu:24.04
+      - name: "A: --user <dir owner uid:gid> (spicescript trunk) creating .spice"
+        run: |
+          d="$RUNNER_TEMP/inst-a"; mkdir -p "$d"; ls -ldn "$d"
+          img=ubuntu:26.04; docker image inspect $img >/dev/null 2>&1 || img=ubuntu:24.04
+          set +e
+          docker run --rm --user "$(id -u):$(id -g)" -v "$d:$d" -w "$d" "$img" mkdir "$d/.spice"
+          echo "exit=$?"
+      - name: "B: --user 0:0 creating .spice"
+        run: |
+          d="$RUNNER_TEMP/inst-b"; mkdir -p "$d"
+          img=ubuntu:26.04; docker image inspect $img >/dev/null 2>&1 || img=ubuntu:24.04
+          set +e
+          docker run --rm --user 0:0 -v "$d:$d" -w "$d" "$img" mkdir "$d/.spice"
+          echo "exit=$?"; ls -ldn "$d/.spice"
+      - name: "C: host-network container -> listener on the runner"
+        run: |
+          ip=$(ip -4 route get 192.0.2.1 | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1)}')
+          echo "routable=$ip"
+          python3 -m http.server 18099 --bind 127.0.0.1 >/dev/null 2>&1 &
+          python3 -m http.server 18098 --bind 0.0.0.0 >/dev/null 2>&1 &
+          sleep 1
+          for url in http://127.0.0.1:18099/ "http://$ip:18098/"; do
+            if docker run --rm --network host curlimages/curl:8.11.1 -s -o /dev/null -m 5 "$url"; then echo "C $url OK"; else echo "C $url FAIL"; fi
+          done
+      - name: "D: runner -> listener in a host-network container"
+        run: |
+          ip=$(ip -4 route get 192.0.2.1 | awk '{for(i=1;i<NF;i++) if($i=="src") print $(i+1)}')
+          docker run -d --rm --name srv --network host python:3.13-alpine python -m http.server 18100 --bind 0.0.0.0
+          sleep 4
+          for url in http://127.0.0.1:18100/ "http://$ip:18100/"; do
+            if curl -s -o /dev/null -m 5 "$url"; then echo "D $url OK"; else echo "D $url FAIL"; fi
+          done
+          docker rm -f srv
