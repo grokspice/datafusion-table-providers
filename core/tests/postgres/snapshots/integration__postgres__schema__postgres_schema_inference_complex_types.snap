@@ -1,0 +1,203 @@
+---
+source: core/tests/postgres/schema.rs
+expression: pretty_schema
+---
+Schema {
+    fields: [
+        Field {
+            name: "id",
+            data_type: Int32,
+        },
+        Field {
+            name: "small_int_col",
+            data_type: Int16,
+            nullable: true,
+        },
+        Field {
+            name: "integer_col",
+            data_type: Int32,
+            nullable: true,
+        },
+        Field {
+            name: "big_int_col",
+            data_type: Int64,
+            nullable: true,
+        },
+        Field {
+            name: "decimal_col",
+            data_type: Decimal128(
+                10,
+                2,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "numeric_col",
+            data_type: Decimal128(
+                10,
+                2,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "real_col",
+            data_type: Float32,
+            nullable: true,
+        },
+        Field {
+            name: "double_col",
+            data_type: Float64,
+            nullable: true,
+        },
+        Field {
+            name: "char_col",
+            data_type: Utf8,
+            nullable: true,
+        },
+        Field {
+            name: "varchar_col",
+            data_type: Utf8,
+            nullable: true,
+        },
+        Field {
+            name: "text_col",
+            data_type: Utf8,
+            nullable: true,
+        },
+        Field {
+            name: "bytea_col",
+            data_type: Binary,
+            nullable: true,
+        },
+        Field {
+            name: "date_col",
+            data_type: Date32,
+            nullable: true,
+        },
+        Field {
+            name: "time_col",
+            data_type: Time64(
+                Nanosecond,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "timestamp_col",
+            data_type: Timestamp(
+                Nanosecond,
+                None,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "timestamptz_col",
+            data_type: Timestamp(
+                Nanosecond,
+                Some(
+                    "UTC",
+                ),
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "interval_col",
+            data_type: Interval(
+                MonthDayNano,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "boolean_col",
+            data_type: Boolean,
+            nullable: true,
+        },
+        Field {
+            name: "mood_col",
+            data_type: Dictionary(
+                Int8,
+                Utf8,
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "uuid_col",
+            data_type: Utf8,
+            nullable: true,
+        },
+        Field {
+            name: "json_col",
+            data_type: Utf8,
+            nullable: true,
+        },
+        Field {
+            name: "int_array_col",
+            data_type: List(
+                Field {
+                    data_type: Int32,
+                    nullable: true,
+                },
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "text_array_col",
+            data_type: List(
+                Field {
+                    data_type: Utf8,
+                    nullable: true,
+                },
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "int_range_col",
+            data_type: Struct(
+                [
+                    Field {
+                        name: "lower",
+                        data_type: Int32,
+                        nullable: true,
+                    },
+                    Field {
+                        name: "upper",
+                        data_type: Int32,
+                        nullable: true,
+                    },
+                ],
+            ),
+            nullable: true,
+        },
+        Field {
+            name: "composite_col",
+            data_type: Struct(
+                [
+                    Field {
+                        name: "x",
+                        data_type: Int32,
+                        nullable: true,
+                    },
+                    Field {
+                        name: "y",
+                        data_type: Int32,
+                        nullable: true,
+                    },
+                    Field {
+                        name: "z",
+                        data_type: Int64,
+                        nullable: true,
+                    },
+                    Field {
+                        name: "x1",
+                        data_type: Decimal128(
+                            10,
+                            2,
+                        ),
+                        nullable: true,
+                    },
+                ],
+            ),
+            nullable: true,
+        },
+    ],
+    metadata: {},
+}

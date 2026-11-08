@@ -1,0 +1,52 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+[workspace]
+members = ["core", "python"]
+resolver = "2"
+
+[workspace.package]
+version = "0.12.0"
+readme = "README.md"
+edition = "2021"
+repository = "https://github.com/datafusion-contrib/datafusion-table-providers"
+license = "Apache-2.0"
+description = "Extend the capabilities of DataFusion to support additional data sources via implementations of the `TableProvider` trait."
+
+[workspace.dependencies]
+arrow = "58.0"
+arrow-array = { version = "58.0" }
+arrow-flight = { version = "58.0", features = [
+    "flight-sql-experimental",
+    "tls-ring",
+] }
+arrow-ipc = { version = "58.0" }
+arrow-schema = { version = "58.0", features = ["serde"] }
+arrow-json = "58.0"
+arrow-odbc = { version = "25.2" }
+datafusion = { version = "54.0", default-features = false }
+datafusion-expr = { version = "54.0" }
+datafusion-federation = { version = "0.5.5" }
+datafusion-ffi = { version = "54.0" }
+datafusion-proto = { version = "54.0" }
+datafusion-physical-expr = { version = "54.0" }
+datafusion-physical-plan = { version = "54.0" }
+datafusion-python = { version = "54.0" }
+datafusion-table-providers = { path = "core" }
+duckdb = { version = "=1.4.4", package = "spiceai_duckdb_fork" } # Forked to add support for duckdb_scan_arrow, pending: https://github.com/duckdb/duckdb-rs/pull/488
+adbc_core = { version = "0.23" }
+adbc_driver_manager = { version = "0.23" }
