@@ -1,0 +1,136 @@
+name: Configure apt mirrors and timeouts
+description: >-
+  Configures apt to fail over quickly from an unresponsive mirror and
+  switches to Ubuntu mirrors geographically close to our self-hosted runners (Pittsburgh Teraswitch
+  datacenter) to avoid transient archive.ubuntu.com mirror-sync failures.
+  Safe no-op on non-Linux runners.
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure apt mirrors and retries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Give up on an unresponsive mirror after 10 seconds and use the next
+        # mirror or source. Retries run without a delay: Ubuntu 24.04's apt can
+        # wait forever when a delayed retry is queued behind other downloads
+        # from the same mirror. apt applies the last value in filename order, so
+        # this file must sort after the GitHub-hosted image's zz-retries.
+        sudo tee /etc/apt/apt.conf.d/zz-spice-acquire > /dev/null <<'EOF'
+        Acquire::Retries "3";
+        Acquire::Retries::Delay "false";
+        Acquire::http::Timeout "10";
+        Acquire::https::Timeout "10";
+        Acquire::ForceIPv4 "true";
+        EOF
+
+        # GitHub-hosted Ubuntu runner images can include the git-core PPA.
+        # It is not needed for CI and can make apt update fail when Launchpad
+        # times out.
+        if [ -d /etc/apt/sources.list.d ]; then
+          while IFS= read -r -d '' SOURCE_FILE; do
+            if sudo grep -Eq 'ppa\.launchpadcontent\.net/git-core/ppa|git-core/ppa' "${SOURCE_FILE}"; then
+              echo "Removing git-core PPA apt source: ${SOURCE_FILE}"
+              sudo rm -f "${SOURCE_FILE}"
+            fi
+          done < <(
+            sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \
+              \( -name '*.list' -o -name '*.sources' \) -print0
+          )
+        fi
+
+        # Ordered list of Ubuntu archive mirrors close to Pittsburgh, PA
+        # (Teraswitch datacenter), with reliable fallbacks.
+        #
+        # Verified on https://launchpad.net/ubuntu/+archivemirrors :
+        #   - mirror.pit.teraswitch.com       (Pittsburgh, PA - Teraswitch)
+        #   - mirrors.edge.kernel.org         (global kernel.org CDN)
+        ARCHIVE_MIRRORS=(
+          "http://mirror.pit.teraswitch.com/ubuntu/"
+          "http://mirrors.edge.kernel.org/ubuntu/"
+          "http://archive.ubuntu.com/ubuntu/"
+        )
+
+        # The archive source uses apt's mirror method, which fetches each
+        # file from the first mirror in the list and moves to the next one
+        # when that mirror fails: a transport error, or an index whose size
+        # or hash does not match its Release file because the mirror is
+        # mid-sync. Several URIs in one deb822 stanza are not a failover
+        # list: apt treats each URI as a separate source and downloads every
+        # index from all of them, so one mirror mid-sync fails apt-get update
+        # even when the others served the same file. The priority tags keep
+        # the mirrors in the order above; without them apt shuffles the list.
+        MIRROR_LIST=/etc/apt/spice-ubuntu-mirrors.txt
+        MIRROR_URI="mirror+file:${MIRROR_LIST}"
+        for i in "${!ARCHIVE_MIRRORS[@]}"; do
+          printf '%s\tpriority:%d\n' "${ARCHIVE_MIRRORS[$i]}" "$((i + 1))"
+        done | sudo tee "${MIRROR_LIST}" > /dev/null
+
+        # Ubuntu 24.04 (noble) ships sources in deb822 format at
+        # /etc/apt/sources.list.d/ubuntu.sources; older releases use
+        # /etc/apt/sources.list. Handle both. Entries for security.ubuntu.com
+        # stay as they are.
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          sudo cp /etc/apt/sources.list.d/ubuntu.sources \
+                  /etc/apt/sources.list.d/ubuntu.sources.bak
+          # Ubuntu's default deb822 file has separate archive and security
+          # stanzas. Replace only the archive URIs line and leave the
+          # security stanza untouched. The archive line is either Ubuntu's
+          # own single URI or, on a runner an earlier version of this action
+          # already configured, the space-separated mirror list it wrote.
+          sudo sed -i -E \
+            -e "/^URIs:.*https?:\/\/archive\.ubuntu\.com\/ubuntu\/?([[:space:]]|$)/s|^URIs:.*$|URIs: ${MIRROR_URI}|" \
+            /etc/apt/sources.list.d/ubuntu.sources
+          # If the substitution had no effect, surface diagnostics but do not
+          # fail the action.
+          if ! grep -Fq "${MIRROR_URI}" /etc/apt/sources.list.d/ubuntu.sources; then
+            echo "::warning::configure-apt: ${MIRROR_URI} not found in ubuntu.sources after substitution attempt"
+            echo "--- current ubuntu.sources URIs ---" >&2
+            grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources >&2 || true
+          fi
+        fi
+        if [ -f /etc/apt/sources.list ]; then
+          sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+          # Point every archive.ubuntu.com / us.archive.ubuntu.com entry
+          # (http or https) at the same mirror list, as well as the primary
+          # mirror an earlier version of this action wrote there.
+          sudo sed -i -E \
+            -e "s|https?://archive\.ubuntu\.com/ubuntu/?|${MIRROR_URI}|g" \
+            -e "s|https?://us\.archive\.ubuntu\.com/ubuntu/?|${MIRROR_URI}|g" \
+            -e "s|https?://mirror\.pit\.teraswitch\.com/ubuntu/?|${MIRROR_URI}|g" \
+            /etc/apt/sources.list
+        fi
+
+        echo "apt mirror list ${MIRROR_LIST}, in failover order: ${ARCHIVE_MIRRORS[*]}"
+        echo "apt acquire policy installed at /etc/apt/apt.conf.d/zz-spice-acquire"
+
+    - name: Verify apt mirror configuration (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo "=== Effective apt acquire settings ==="
+        apt-config dump Acquire::Retries Acquire::http::Timeout Acquire::https::Timeout Acquire::ForceIPv4
+
+        echo "=== Archive mirror list ==="
+        if [ -f /etc/apt/spice-ubuntu-mirrors.txt ]; then
+          cat /etc/apt/spice-ubuntu-mirrors.txt
+        else
+          echo "not present"
+        fi
+
+        echo "=== Active URIs in ubuntu.sources (deb822) ==="
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
+        else
+          echo "not present"
+        fi
+
+        echo "=== Active archive lines in sources.list (classic) ==="
+        if [ -f /etc/apt/sources.list ]; then
+          grep -E 'archive\.ubuntu\.com|mirror\+file:' /etc/apt/sources.list | grep -v '^#' || true
+        else
+          echo "not present"
+        fi

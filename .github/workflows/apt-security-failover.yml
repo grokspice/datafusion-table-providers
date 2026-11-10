@@ -1,0 +1,115 @@
+name: apt security failover repro
+on:
+  push:
+    branches: [ci-sandbox/apt-security-failover]
+permissions:
+  contents: read
+jobs:
+  repro:
+    name: ${{ matrix.variant }} / ${{ matrix.fault }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: ubuntu:24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [trunk, fix]
+        fault: [security-midsync, security-down-mid-job, every-mirror-bad]
+    steps:
+      - name: Base tools (before any fault)
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo python3 git ca-certificates > /dev/null
+          grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
+      - uses: actions/checkout@v4
+      - name: configure-apt (trunk copy)
+        if: matrix.variant == 'trunk'
+        uses: ./.github/actions/configure-apt-trunk
+      - name: configure-apt (fix)
+        if: matrix.variant == 'fix'
+        uses: ./.github/actions/configure-apt-fix
+      - name: Fetch real InRelease files while the network is clean
+        run: |
+          mkdir -p /srv/real
+          for s in noble noble-updates noble-backports noble-security; do
+            python3 -c "import urllib.request,sys; open(sys.argv[2],'wb').write(urllib.request.urlopen(sys.argv[1],timeout=30).read())" \
+              "http://archive.ubuntu.com/ubuntu/dists/$s/InRelease" "/srv/real/$s.InRelease"
+          done
+          ls -l /srv/real
+      - name: Healthy apt-get update (baseline)
+        run: |
+          apt-get update 2>&1 | tail -3
+          apt-cache policy libnfs14 | head -4
+      - name: Inject fault
+        run: |
+          cat > /srv/fake.py <<'EOF'
+          # Serves the real, signed InRelease for each suite and a 1 KiB body
+          # of garbage for every other path: an index or .deb whose size and
+          # hash do not match the signed InRelease, as a mirror caught
+          # mid-sync serves.
+          import http.server, os, re
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  m = re.search(r"/dists/([^/]+)/InRelease$", self.path)
+                  if m and os.path.exists(f"/srv/real/{m.group(1)}.InRelease"):
+                      body = open(f"/srv/real/{m.group(1)}.InRelease", "rb").read()
+                  else:
+                      body = b"x" * 1024
+                  self.send_response(200)
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+              def log_message(self, *a):
+                  pass
+          http.server.ThreadingHTTPServer(("127.0.0.1", 80), H).serve_forever()
+          EOF
+          case "${{ matrix.fault }}" in
+            security-midsync)
+              echo "127.0.0.1 security.ubuntu.com" >> /etc/hosts
+              (setsid nohup python3 /srv/fake.py > /srv/fake.log 2>&1 &) ;;
+            security-down-mid-job)
+              # apt-get update already ran clean above; the host now refuses
+              # connections, as security.ubuntu.com did between update and
+              # install in the failing CI runs.
+              echo "127.0.0.1 security.ubuntu.com" >> /etc/hosts ;;
+            every-mirror-bad)
+              for h in security.ubuntu.com archive.ubuntu.com mirrors.edge.kernel.org mirror.pit.teraswitch.com; do
+                echo "127.0.0.1 $h" >> /etc/hosts
+              done
+              (setsid nohup python3 /srv/fake.py > /srv/fake.log 2>&1 &) ;;
+          esac
+          sleep 1
+          rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+          cat /etc/hosts
+      - name: Restore lists for the mid-job outage
+        if: matrix.fault == 'security-down-mid-job'
+        run: |
+          # The outage case needs indexes from a clean update. Re-run update
+          # with security.ubuntu.com reachable, then block it again.
+          sed -i '/security.ubuntu.com/d' /etc/hosts
+          apt-get update -qq
+          echo "127.0.0.1 security.ubuntu.com" >> /etc/hosts
+      - name: apt-get update under the fault
+        id: update
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          apt-get update > /tmp/update.log 2>&1; rc=$?
+          grep -E '^(Err|E:|W:|Ign|Get:[0-9]+ .*security|Fetched)|Mirror|mismatch|unexpected size' /tmp/update.log | cut -c1-220
+          echo "apt-get update exit=$rc"
+          exit $rc
+      - name: Download a package the security pocket updated
+        id: install
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          apt-cache policy libnfs14 | head -4
+          apt-get install -y --download-only libnfs14 > /tmp/install.log 2>&1; rc=$?
+          grep -E '^(Get|Err|E:)|Connection|mismatch' /tmp/install.log | cut -c1-220
+          echo "apt-get install exit=$rc"
+          exit $rc
+      - name: Result
+        run: |
+          echo "RESULT variant=${{ matrix.variant }} fault=${{ matrix.fault }} update=${{ steps.update.outcome }} install=${{ steps.install.outcome }}"
