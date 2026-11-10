@@ -18,8 +18,11 @@ jobs:
     steps:
       - name: Base tools (before any fault)
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo python3 git ca-certificates > /dev/null
+          for i in 1 2 3 4 5; do
+            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo python3 git ca-certificates > /dev/null && break
+            echo "harness setup attempt $i failed; retrying"; sleep 15
+          done
+          command -v python3 sudo git
           grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
       - uses: actions/checkout@v4
       - name: configure-apt (trunk copy)
@@ -32,8 +35,12 @@ jobs:
         run: |
           mkdir -p /srv/real
           for s in noble noble-updates noble-backports noble-security; do
-            python3 -c "import urllib.request,sys; open(sys.argv[2],'wb').write(urllib.request.urlopen(sys.argv[1],timeout=30).read())" \
-              "http://archive.ubuntu.com/ubuntu/dists/$s/InRelease" "/srv/real/$s.InRelease"
+            for i in 1 2 3 4 5; do
+              python3 -c "import urllib.request,sys; open(sys.argv[2],'wb').write(urllib.request.urlopen(sys.argv[1],timeout=60).read())" \
+                "http://archive.ubuntu.com/ubuntu/dists/$s/InRelease" "/srv/real/$s.InRelease" && break
+              echo "harness fetch attempt $i failed; retrying"; sleep 15
+            done
+            test -s "/srv/real/$s.InRelease"
           done
           ls -l /srv/real
       - name: Healthy apt-get update (baseline)
@@ -86,8 +93,9 @@ jobs:
         run: |
           # The outage case needs indexes from a clean update. Re-run update
           # with security.ubuntu.com reachable, then block it again.
-          sed -i '/security.ubuntu.com/d' /etc/hosts
-          apt-get update -qq
+          grep -v security.ubuntu.com /etc/hosts > /tmp/hosts; cat /tmp/hosts > /etc/hosts
+          for i in 1 2 3 4 5; do apt-get update -qq && break; echo "harness update attempt $i failed; retrying"; sleep 15; done
+          apt-cache policy libnfs14 | head -4
           echo "127.0.0.1 security.ubuntu.com" >> /etc/hosts
       - name: apt-get update under the fault
         id: update
